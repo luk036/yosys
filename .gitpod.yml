@@ -2,13 +2,10 @@ image:
   file: .gitpod.Dockerfile
 
 tasks:
-  - init: chmod +x envconfig.sh &&
-      ./envconfig.sh &&
-      make config-gcc &&
-			mkdir build && cd build &&
-      make -f ../Makefile
   - command: >
       export CMAKE_PREFIX=/opt/conda
+  - init: chmod +x envconfig.sh &&
+      ./envconfig.sh
 
 vscode:
   extensions:
