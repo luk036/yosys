@@ -5,7 +5,8 @@ tasks:
   - init: chmod +x envconfig.sh &&
       ./envconfig.sh &&
       make config-gcc &&
-      make
+			mkdir build && cd build &&
+      make -f ../Makefile
   - command: >
       export CMAKE_PREFIX=/opt/conda
 
