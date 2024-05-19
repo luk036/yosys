@@ -1,7 +1,7 @@
 /*
  *  yosys -- Yosys Open SYnthesis Suite
  *
- *  Copyright (C) 2012  Clifford Wolf <clifford@clifford.at>
+ *  Copyright (C) 2012  Claire Xenia Wolf <claire@yosyshq.com>
  *
  *  Permission to use, copy, modify, and/or distribute this software for any
  *  purpose with or without fee is hereby granted, provided that the above
@@ -47,7 +47,7 @@ struct ConnectPass : public Pass {
 	{
 		//   |---v---|---v---|---v---|---v---|---v---|---v---|---v---|---v---|---v---|---v---|
 		log("\n");
-		log("    connect [-nomap] [-nounset] -set <lhs-expr> <rhs-expr>\n");
+		log("    connect [-nomap] [-nounset] -set <lhs-expr> <rhs-expr> [selection]\n");
 		log("\n");
 		log("Create a connection. This is equivalent to adding the statement 'assign\n");
 		log("<lhs-expr> = <rhs-expr>;' to the Verilog input. Per default, all existing\n");
@@ -55,12 +55,12 @@ struct ConnectPass : public Pass {
 		log("the -nounset option.\n");
 		log("\n");
 		log("\n");
-		log("    connect [-nomap] -unset <expr>\n");
+		log("    connect [-nomap] -unset <expr> [selection]\n");
 		log("\n");
 		log("Unconnect all existing drivers for the specified expression.\n");
 		log("\n");
 		log("\n");
-		log("    connect [-nomap] -port <cell> <port> <expr>\n");
+		log("    connect [-nomap] [-assert] -port <cell> <port> <expr> [selection]\n");
 		log("\n");
 		log("Connect the specified cell port to the specified cell port.\n");
 		log("\n");
@@ -72,23 +72,15 @@ struct ConnectPass : public Pass {
 		log("The connect command operates in one module only. Either only one module must\n");
 		log("be selected or an active module must be set using the 'cd' command.\n");
 		log("\n");
+		log("The -assert option verifies that the connection already exists, instead of\n");
+		log("making it.\n");
+		log("\n");
 		log("This command does not operate on module with processes.\n");
 		log("\n");
 	}
 	void execute(std::vector<std::string> args, RTLIL::Design *design) override
 	{
-		RTLIL::Module *module = nullptr;
-		for (auto mod : design->selected_modules()) {
-			if (module != nullptr)
-				log_cmd_error("Multiple modules selected: %s, %s\n", log_id(module->name), log_id(mod->name));
-			module = mod;
-		}
-		if (module == nullptr)
-			log_cmd_error("No modules selected.\n");
-		if (!module->processes.empty())
-			log_cmd_error("Found processes in selected module.\n");
-
-		bool flag_nounset = false, flag_nomap = false;
+		bool flag_nounset = false, flag_nomap = false, flag_assert = false;
 		std::string set_lhs, set_rhs, unset_expr;
 		std::string port_cell, port_port, port_expr;
 
@@ -102,6 +94,10 @@ struct ConnectPass : public Pass {
 			}
 			if (arg == "-nomap") {
 				flag_nomap = true;
+				continue;
+			}
+			if (arg == "-assert") {
+				flag_assert = true;
 				continue;
 			}
 			if (arg == "-set" && argidx+2 < args.size()) {
@@ -121,12 +117,24 @@ struct ConnectPass : public Pass {
 			}
 			break;
 		}
+		extra_args(args, argidx, design);
+
+		RTLIL::Module *module = nullptr;
+		for (auto mod : design->selected_modules()) {
+			if (module != nullptr)
+				log_cmd_error("Multiple modules selected: %s, %s\n", log_id(module->name), log_id(mod->name));
+			module = mod;
+		}
+		if (module == nullptr)
+			log_cmd_error("No modules selected.\n");
+		if (!module->processes.empty())
+			log_cmd_error("Found processes in selected module.\n");
 
 		SigMap sigmap;
 		if (!flag_nomap)
 			for (auto &it : module->connections()) {
 				std::vector<RTLIL::SigBit> lhs = it.first.to_sigbit_vector();
-				std::vector<RTLIL::SigBit> rhs = it.first.to_sigbit_vector();
+				std::vector<RTLIL::SigBit> rhs = it.second.to_sigbit_vector();
 				for (size_t i = 0; i < lhs.size(); i++)
 					if (rhs[i].wire != nullptr)
 						sigmap.add(lhs[i], rhs[i]);
@@ -136,6 +144,9 @@ struct ConnectPass : public Pass {
 		{
 			if (!unset_expr.empty() || !port_cell.empty())
 				log_cmd_error("Can't use -set together with -unset and/or -port.\n");
+
+			if (flag_assert)
+				log_cmd_error("The -assert option is only supported with -port.\n");
 
 			RTLIL::SigSpec sig_lhs, sig_rhs;
 			if (!RTLIL::SigSpec::parse_sel(sig_lhs, design, module, set_lhs))
@@ -157,6 +168,9 @@ struct ConnectPass : public Pass {
 			if (!port_cell.empty() || flag_nounset)
 				log_cmd_error("Can't use -unset together with -port and/or -nounset.\n");
 
+			if (flag_assert)
+				log_cmd_error("The -assert option is only supported with -port.\n");
+
 			RTLIL::SigSpec sig;
 			if (!RTLIL::SigSpec::parse_sel(sig, design, module, unset_expr))
 				log_cmd_error("Failed to parse unset expression `%s'.\n", unset_expr.c_str());
@@ -177,7 +191,14 @@ struct ConnectPass : public Pass {
 			if (!RTLIL::SigSpec::parse_sel(sig, design, module, port_expr))
 				log_cmd_error("Failed to parse port expression `%s'.\n", port_expr.c_str());
 
-			module->cell(RTLIL::escape_id(port_cell))->setPort(RTLIL::escape_id(port_port), sigmap(sig));
+			if (!flag_assert) {
+				module->cell(RTLIL::escape_id(port_cell))->setPort(RTLIL::escape_id(port_port), sigmap(sig));
+			} else {
+				SigSpec cur = module->cell(RTLIL::escape_id(port_cell))->getPort(RTLIL::escape_id(port_port));
+				if (sigmap(sig) != sigmap(cur)) {
+					log_cmd_error("Expected connection not present: expected %s, found %s.\n", log_signal(sig), log_signal(cur));
+				}
+			}
 		}
 		else
 			log_cmd_error("Expected -set, -unset, or -port.\n");

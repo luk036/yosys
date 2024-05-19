@@ -1,7 +1,7 @@
 /*
  *  yosys -- Yosys Open SYnthesis Suite
  *
- *  Copyright (C) 2012  Clifford Wolf <clifford@clifford.at>
+ *  Copyright (C) 2012  Claire Xenia Wolf <claire@yosyshq.com>
  *
  *  Permission to use, copy, modify, and/or distribute this software for any
  *  purpose with or without fee is hereby granted, provided that the above
@@ -30,6 +30,7 @@ struct WreduceConfig
 {
 	pool<IdString> supported_cell_types;
 	bool keepdc = false;
+	bool mux_undef = false;
 
 	WreduceConfig()
 	{
@@ -83,7 +84,7 @@ struct WreduceWorker
 
 			SigBit ref = sig_a[i];
 			for (int k = 0; k < GetSize(sig_s); k++) {
-				if ((config->keepdc || (ref != State::Sx && sig_b[k*GetSize(sig_a) + i] != State::Sx)) && ref != sig_b[k*GetSize(sig_a) + i])
+				if ((config->keepdc || !config->mux_undef || (ref != State::Sx && sig_b[k*GetSize(sig_a) + i] != State::Sx)) && ref != sig_b[k*GetSize(sig_a) + i])
 					goto no_match_ab;
 				if (sig_b[k*GetSize(sig_a) + i] != State::Sx)
 					ref = sig_b[k*GetSize(sig_a) + i];
@@ -165,8 +166,8 @@ struct WreduceWorker
 
 		for (int i = GetSize(sig_q)-1; i >= 0; i--)
 		{
-			if (zero_ext && sig_d[i] == State::S0 && (initval[i] == State::S0 || initval[i] == State::Sx) &&
-					(!has_reset || i >= GetSize(rst_value) || rst_value[i] == State::S0 || rst_value[i] == State::Sx)) {
+			if (zero_ext && sig_d[i] == State::S0 && (initval[i] == State::S0 || (!config->keepdc && initval[i] == State::Sx)) &&
+					(!has_reset || i >= GetSize(rst_value) || rst_value[i] == State::S0 || (!config->keepdc && rst_value[i] == State::Sx))) {
 				module->connect(sig_q[i], State::S0);
 				initvals.remove_init(sig_q[i]);
 				sig_d.remove(i);
@@ -174,8 +175,8 @@ struct WreduceWorker
 				continue;
 			}
 
-			if (sign_ext && i > 0 && sig_d[i] == sig_d[i-1] && initval[i] == initval[i-1] &&
-					(!has_reset || i >= GetSize(rst_value) || rst_value[i] == rst_value[i-1])) {
+			if (sign_ext && i > 0 && sig_d[i] == sig_d[i-1] && initval[i] == initval[i-1] && (!config->keepdc || initval[i] != State::Sx) &&
+					(!has_reset || i >= GetSize(rst_value) || (rst_value[i] == rst_value[i-1] && (!config->keepdc || rst_value[i] != State::Sx)))) {
 				module->connect(sig_q[i], sig_q[i-1]);
 				initvals.remove_init(sig_q[i]);
 				sig_d.remove(i);
@@ -363,10 +364,16 @@ struct WreduceWorker
 			if (cell->type == ID($mul))
 				max_y_size = a_size + b_size;
 
-			while (GetSize(sig) > 1 && GetSize(sig) > max_y_size) {
-				module->connect(sig[GetSize(sig)-1], is_signed ? sig[GetSize(sig)-2] : State::S0);
-				sig.remove(GetSize(sig)-1);
-				bits_removed++;
+			max_y_size = std::max(max_y_size, 1);
+
+			if (GetSize(sig) > max_y_size) {
+				SigSpec extra_bits = sig.extract(max_y_size, GetSize(sig) - max_y_size);
+
+				bits_removed += GetSize(extra_bits);
+				sig.remove(max_y_size, GetSize(extra_bits));
+
+				SigBit padbit = is_signed ? sig[GetSize(sig)-1] : State::S0;
+				module->connect(extra_bits, SigSpec(padbit, GetSize(extra_bits)));
 			}
 		}
 
@@ -479,6 +486,9 @@ struct WreducePass : public Pass {
 		log("        Do not change the width of memory address ports. Use this options in\n");
 		log("        flows that use the 'memory_memx' pass.\n");
 		log("\n");
+		log("    -mux_undef\n");
+		log("        remove 'undef' inputs from $mux, $pmux and $_MUX_ cells\n");
+		log("\n");
 		log("    -keepdc\n");
 		log("        Do not optimize explicit don't-care values.\n");
 		log("\n");
@@ -498,6 +508,10 @@ struct WreducePass : public Pass {
 			}
 			if (args[argidx] == "-keepdc") {
 				config.keepdc = true;
+				continue;
+			}
+			if (args[argidx] == "-mux_undef") {
+				config.mux_undef = true;
 				continue;
 			}
 			break;
@@ -558,7 +572,7 @@ struct WreducePass : public Pass {
 					}
 				}
 
-				if (!opt_memx && c->type.in(ID($memrd), ID($memwr), ID($meminit))) {
+				if (!opt_memx && c->type.in(ID($memrd), ID($memrd_v2), ID($memwr), ID($memwr_v2), ID($meminit), ID($meminit_v2))) {
 					IdString memid = c->getParam(ID::MEMID).decode_string();
 					RTLIL::Memory *mem = module->memories.at(memid);
 					if (mem->start_offset >= 0) {

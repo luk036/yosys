@@ -1,4 +1,4 @@
-#!/bin/bash
+#!/usr/bin/env bash
 
 set -e
 
@@ -11,12 +11,12 @@ for arch in ../../techlibs/*; do
 		if [ "${defines[$arch_name]}" ]; then
 			for def in ${defines[$arch_name]}; do
 				echo -n "Test $path -D$def ->"
-				iverilog -t null -I$arch -D$def $path
+				iverilog -t null -I$arch -D$def -DNO_ICE40_DEFAULT_ASSIGNMENTS $path
 				echo " ok"
 			done
 		else
 			echo -n "Test $path ->"
-			iverilog -t null -I$arch $path
+			iverilog -t null -I$arch -g2005-sv $path
 			echo " ok"
 		fi
 	done

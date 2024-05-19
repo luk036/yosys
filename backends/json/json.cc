@@ -1,7 +1,7 @@
 /*
  *  yosys -- Yosys Open SYnthesis Suite
  *
- *  Copyright (C) 2012  Clifford Wolf <clifford@clifford.at>
+ *  Copyright (C) 2012  Claire Xenia Wolf <claire@yosyshq.com>
  *
  *  Permission to use, copy, modify, and/or distribute this software for any
  *  purpose with or without fee is hereby granted, provided that the above
@@ -52,8 +52,23 @@ struct JsonWriter
 		string newstr = "\"";
 		for (char c : str) {
 			if (c == '\\')
+				newstr += "\\\\";
+			else if (c == '"')
+				newstr += "\\\"";
+			else if (c == '\b')
+				newstr += "\\b";
+			else if (c == '\f')
+				newstr += "\\f";
+			else if (c == '\n')
+				newstr += "\\n";
+			else if (c == '\r')
+				newstr += "\\r";
+			else if (c == '\t')
+				newstr += "\\t";
+			else if (c < 0x20)
+				newstr += stringf("\\u%04X", c);
+			else
 				newstr += c;
-			newstr += c;
 		}
 		return newstr + "\"";
 	}
@@ -135,6 +150,10 @@ struct JsonWriter
 		// reserve 0 and 1 to avoid confusion with "0" and "1"
 		sigidcounter = 2;
 
+		if (module->has_processes()) {
+			log_error("Module %s contains processes, which are not supported by JSON backend (run `proc` first).\n", log_id(module));
+		}
+
 		f << stringf("    %s: {\n", get_name(module->name).c_str());
 
 		f << stringf("      \"attributes\": {");
@@ -172,6 +191,10 @@ struct JsonWriter
 		first = true;
 		for (auto c : module->cells()) {
 			if (use_selection && !module->selected(c))
+				continue;
+			// Eventually we will want to emit $scopeinfo, but currently this
+			// will break JSON netlist consumers like nextpnr
+			if (c->type == ID($scopeinfo))
 				continue;
 			f << stringf("%s\n", first ? "" : ",");
 			f << stringf("        %s: {\n", get_name(c->name).c_str());
@@ -215,6 +238,27 @@ struct JsonWriter
 			first = false;
 		}
 		f << stringf("\n      },\n");
+
+		if (!module->memories.empty()) {
+			f << stringf("      \"memories\": {");
+			first = true;
+			for (auto &it : module->memories) {
+				if (use_selection && !module->selected(it.second))
+					continue;
+				f << stringf("%s\n", first ? "" : ",");
+				f << stringf("        %s: {\n", get_name(it.second->name).c_str());
+				f << stringf("          \"hide_name\": %s,\n", it.second->name[0] == '$' ? "1" : "0");
+				f << stringf("          \"attributes\": {");
+				write_parameters(it.second->attributes);
+				f << stringf("\n          },\n");
+				f << stringf("          \"width\": %d,\n", it.second->width);
+				f << stringf("          \"start_offset\": %d,\n", it.second->start_offset);
+				f << stringf("          \"size\": %d\n", it.second->size);
+				f << stringf("        }");
+				first = false;
+			}
+			f << stringf("\n      },\n");
+		}
 
 		f << stringf("      \"netnames\": {");
 		first = true;
@@ -332,6 +376,10 @@ struct JsonBackend : public Backend {
 		log("            <cell_name>: <cell_details>,\n");
 		log("            ...\n");
 		log("          },\n");
+		log("          \"memories\": {\n");
+		log("            <memory_name>: <memory_details>,\n");
+		log("            ...\n");
+		log("          },\n");
 		log("          \"netnames\": {\n");
 		log("            <net_name>: <net_details>,\n");
 		log("            ...\n");
@@ -350,10 +398,11 @@ struct JsonBackend : public Backend {
 		log("      \"bits\": <bit_vector>\n");
 		log("      \"offset\": <the lowest bit index in use, if non-0>\n");
 		log("      \"upto\": <1 if the port bit indexing is MSB-first>\n");
+		log("      \"signed\": <1 if the port is signed>\n");
 		log("    }\n");
 		log("\n");
-		log("The \"offset\" and \"upto\" fields are skipped if their value would be 0.");
-		log("They don't affect connection semantics, and are only used to preserve original");
+		log("The \"offset\" and \"upto\" fields are skipped if their value would be 0.\n");
+		log("They don't affect connection semantics, and are only used to preserve original\n");
 		log("HDL bit indexing.");
 		log("And <cell_details> is:\n");
 		log("\n");
@@ -379,6 +428,19 @@ struct JsonBackend : public Backend {
 		log("      },\n");
 		log("    }\n");
 		log("\n");
+		log("And <memory_details> is:\n");
+		log("\n");
+		log("    {\n");
+		log("      \"hide_name\": <1 | 0>,\n");
+		log("      \"attributes\": {\n");
+		log("        <attribute_name>: <attribute_value>,\n");
+		log("        ...\n");
+		log("      },\n");
+		log("      \"width\": <memory width>\n");
+		log("      \"start_offset\": <the lowest valid memory address>\n");
+		log("      \"size\": <memory size>\n");
+		log("    }\n");
+		log("\n");
 		log("And <net_details> is:\n");
 		log("\n");
 		log("    {\n");
@@ -386,6 +448,7 @@ struct JsonBackend : public Backend {
 		log("      \"bits\": <bit_vector>\n");
 		log("      \"offset\": <the lowest bit index in use, if non-0>\n");
 		log("      \"upto\": <1 if the port bit indexing is MSB-first>\n");
+		log("      \"signed\": <1 if the port is signed>\n");
 		log("    }\n");
 		log("\n");
 		log("The \"hide_name\" fields are set to 1 when the name of this cell or net is\n");
@@ -400,8 +463,8 @@ struct JsonBackend : public Backend {
 		log("connected to a constant driver are denoted as string \"0\", \"1\", \"x\", or\n");
 		log("\"z\" instead of a number.\n");
 		log("\n");
-		log("Bit vectors (including integers) are written as string holding the binary");
-		log("representation of the value. Strings are written as strings, with an appended");
+		log("Bit vectors (including integers) are written as string holding the binary\n");
+		log("representation of the value. Strings are written as strings, with an appended\n");
 		log("blank in cases of strings of the form /[01xz]* */.\n");
 		log("\n");
 		log("For example the following Verilog code:\n");
@@ -607,8 +670,9 @@ struct JsonPass : public Pass {
 
 		std::ostream *f;
 		std::stringstream buf;
+		bool empty = filename.empty();
 
-		if (!filename.empty()) {
+		if (!empty) {
 			rewrite_filename(filename);
 			std::ofstream *ff = new std::ofstream;
 			ff->open(filename.c_str(), std::ofstream::trunc);
@@ -624,7 +688,7 @@ struct JsonPass : public Pass {
 		JsonWriter json_writer(*f, true, aig_mode, compat_int_mode);
 		json_writer.write_design(design);
 
-		if (!filename.empty()) {
+		if (!empty) {
 			delete f;
 		} else {
 			log("%s", buf.str().c_str());

@@ -1,7 +1,7 @@
 /*
  *  yosys -- Yosys Open SYnthesis Suite
  *
- *  Copyright (C) 2012  Clifford Wolf <clifford@clifford.at>
+ *  Copyright (C) 2012  Claire Xenia Wolf <claire@yosyshq.com>
  *                2019  Bogdan Vukobratovic <bogdan.vukobratovic@gmail.com>
  *
  *  Permission to use, copy, modify, and/or distribute this software for any
@@ -131,6 +131,9 @@ RTLIL::IdString decode_port_semantics(RTLIL::Cell *cell, RTLIL::IdString port_na
 	if (cell->type.in(ID($lt), ID($le), ID($ge), ID($gt), ID($div), ID($mod), ID($divfloor), ID($modfloor), ID($concat), SHIFT_OPS) && port_name == ID::B)
 		return port_name;
 
+	if (cell->type.in(ID($_ANDNOT_), ID($_ORNOT_)))
+		return port_name;
+
 	return "";
 }
 
@@ -244,8 +247,8 @@ void merge_operators(RTLIL::Module *module, RTLIL::Cell *mux, const std::vector<
 	}
 
 	if (shared_op->type.in(ID($alu))) {
-		shared_op->setPort(ID::X, module->addWire(NEW_ID, GetSize(new_sig_out)));
-		shared_op->setPort(ID::CO, module->addWire(NEW_ID, GetSize(new_sig_out)));
+		shared_op->setPort(ID::X, module->addWire(NEW_ID, GetSize(new_out)));
+		shared_op->setPort(ID::CO, module->addWire(NEW_ID, GetSize(new_out)));
 	}
 
 	bool is_fine = shared_op->type.in(FINE_BITWISE_OPS);

@@ -1,7 +1,7 @@
 /*
  *  yosys -- Yosys Open SYnthesis Suite
  *
- *  Copyright (C) 2012  Clifford Wolf <clifford@clifford.at>
+ *  Copyright (C) 2012  Claire Xenia Wolf <claire@yosyshq.com>
  *
  *  Permission to use, copy, modify, and/or distribute this software for any
  *  purpose with or without fee is hereby granted, provided that the above
@@ -573,8 +573,25 @@ struct SmvWorker
 				continue;
 			}
 
-			if (cell->type[0] == '$')
-				log_error("Found currently unsupported cell type %s (%s.%s).\n", log_id(cell->type), log_id(module), log_id(cell));
+			if (cell->type == ID($scopeinfo))
+				continue;
+
+			if (cell->type[0] == '$') {
+				if (cell->type.in(ID($dffe), ID($sdff), ID($sdffe), ID($sdffce)) || cell->type.str().substr(0, 6) == "$_SDFF" || (cell->type.str().substr(0, 6) == "$_DFFE" && cell->type.str().size() == 10)) {
+					log_error("Unsupported cell type %s for cell %s.%s -- please run `dffunmap` before `write_smv`.\n",
+							log_id(cell->type), log_id(module), log_id(cell));
+				}
+				if (cell->type.in(ID($adff), ID($adffe), ID($aldff), ID($aldffe), ID($dffsr), ID($dffsre)) || cell->type.str().substr(0, 5) == "$_DFF" || cell->type.str().substr(0, 7) == "$_ALDFF") {
+					log_error("Unsupported cell type %s for cell %s.%s -- please run `async2sync; dffunmap` or `clk2fflogic` before `write_smv`.\n",
+							log_id(cell->type), log_id(module), log_id(cell));
+				}
+				if (cell->type.in(ID($sr), ID($dlatch), ID($adlatch), ID($dlatchsr)) || cell->type.str().substr(0, 8) == "$_DLATCH" || cell->type.str().substr(0, 5) == "$_SR_") {
+					log_error("Unsupported cell type %s for cell %s.%s -- please run `clk2fflogic` before `write_smv`.\n",
+							log_id(cell->type), log_id(module), log_id(cell));
+				}
+				log_error("Unsupported cell type %s for cell %s.%s.\n",
+						log_id(cell->type), log_id(module), log_id(cell));
+			}
 
 //			f << stringf("    %s : %s;\n", cid(cell->name), cid(cell->type));
 
@@ -726,6 +743,12 @@ struct SmvBackend : public Backend {
 		bool verbose = false;
 
 		log_header(design, "Executing SMV backend.\n");
+
+		log_push();
+		Pass::call(design, "bmuxmap");
+		Pass::call(design, "demuxmap");
+		Pass::call(design, "bwmuxmap");
+		log_pop();
 
 		size_t argidx;
 		for (argidx = 1; argidx < args.size(); argidx++)

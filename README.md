@@ -3,7 +3,7 @@
 ```
 yosys -- Yosys Open SYnthesis Suite
 
-Copyright (C) 2012 - 2020  Claire Wolf <claire@symbioticeda.com>
+Copyright (C) 2012 - 2024  Claire Xenia Wolf <claire@yosyshq.com>
 
 Permission to use, copy, modify, and/or distribute this software for any
 purpose with or without fee is hereby granted, provided that the above
@@ -40,13 +40,13 @@ Web Site and Other Resources
 ============================
 
 More information and documentation can be found on the Yosys web site:
-- http://www.clifford.at/yosys/
+- https://yosyshq.net/yosys/
 
 The "Documentation" page on the web site contains links to more resources,
 including a manual that even describes some of the Yosys internals:
-- http://www.clifford.at/yosys/documentation.html
+- https://yosyshq.net/yosys/documentation.html
 
-The file `CodingReadme` in this directory contains additional information
+The directory `guidelines` contains additional information
 for people interested in using the Yosys C++ APIs.
 
 Users interested in formal verification might want to use the formal verification
@@ -55,8 +55,23 @@ front-end for Yosys, SymbiYosys:
 - https://github.com/YosysHQ/SymbiYosys
 
 
-Setup
-======
+Installation
+============
+
+Yosys is part of the [Tabby CAD Suite](https://www.yosyshq.com/tabby-cad-datasheet) and the [OSS CAD Suite](https://github.com/YosysHQ/oss-cad-suite-build)! The easiest way to use yosys is to install the binary software suite, which contains all required dependencies and related tools.
+
+* [Contact YosysHQ](https://www.yosyshq.com/contact) for a [Tabby CAD Suite](https://www.yosyshq.com/tabby-cad-datasheet) Evaluation License and download link
+* OR go to https://github.com/YosysHQ/oss-cad-suite-build/releases to download the free OSS CAD Suite
+* Follow the [Install Instructions on GitHub](https://github.com/YosysHQ/oss-cad-suite-build#installation)
+
+Make sure to get a Tabby CAD Suite Evaluation License if you need features such as industry-grade SystemVerilog and VHDL parsers!
+
+For more information about the difference between Tabby CAD Suite and the OSS CAD Suite, please visit https://www.yosyshq.com/tabby-cad-datasheet
+
+Many Linux distributions also provide Yosys binaries, some more up to date than others. Check with your package manager!
+
+Building from Source
+====================
 
 You need a C++ compiler with C++11 support (up-to-date CLANG or GCC is
 recommended) and some standard tools such as GNU Flex, GNU Bison, and GNU Make.
@@ -92,14 +107,16 @@ For Cygwin use the following command to install all prerequisites, or select the
 
 	setup-x86_64.exe -q --packages=bison,flex,gcc-core,gcc-g++,git,libffi-devel,libreadline-devel,make,pkg-config,python3,tcl-devel,boost-build,zlib-devel
 
-There are also pre-compiled Yosys binary packages for Ubuntu and Win32 as well
-as a source distribution for Visual Studio. Visit the Yosys download page for
-more information: http://www.clifford.at/yosys/download.html
-
-To configure the build system to use a specific compiler, use one of
+The environment variable `CXX` can be used to control the C++ compiler used, or
+run one of the following:
 
 	$ make config-clang
 	$ make config-gcc
+
+Note that these will result in `make` ignoring the `CXX` environment variable,
+unless `CXX` is assigned in the call to make, e.g.
+
+  $ make CXX=$CXX
 
 For other compilers and build configurations it might be
 necessary to make some changes to the config section of the
@@ -147,9 +164,10 @@ reading and elaborating the design using the Verilog frontend:
 	yosys> read -sv tests/simple/fiedler-cooley.v
 	yosys> hierarchy -top up3down5
 
-writing the design to the console in Yosys's internal format:
+writing the design to the console in the RTLIL format used by Yosys
+internally:
 
-	yosys> write_ilang
+	yosys> write_rtlil
 
 convert processes (``always`` blocks) to netlist elements and perform
 some simple optimizations:
@@ -491,6 +509,23 @@ Verilog Attributes and non-standard features
   for use in blackboxes and whiteboxes. Use ``read_verilog -specify`` to
   enable this functionality. (By default these blocks are ignored.)
 
+- The ``reprocess_after`` internal attribute is used by the Verilog frontend to
+  mark cells with bindings which might depend on the specified instantiated
+  module. Modules with such cells will be reprocessed during the ``hierarchy``
+  pass once the referenced module definition(s) become available.
+
+- The ``smtlib2_module`` attribute can be set on a blackbox module to specify a
+  formal model directly using SMT-LIB 2. For such a module, the
+  ``smtlib2_comb_expr`` attribute can be used on output ports to define their
+  value using an SMT-LIB 2 expression. For example:
+
+      (* blackbox *)
+      (* smtlib2_module *)
+      module submod(a, b);
+        input [7:0] a;
+        (* smtlib2_comb_expr = "(bvnot a)" *)
+        output [7:0] b;
+      endmodule
 
 Non-standard or SystemVerilog features for formal verification
 ==============================================================
@@ -560,41 +595,42 @@ from SystemVerilog:
 - enums are supported (including inside packages)
 	- but are currently not strongly typed
 
-- packed structs and unions are supported.
+- packed structs and unions are supported
+	- arrays of packed structs/unions are currently not supported
+	- structure literals are currently not supported
+
+- multidimensional arrays are supported
+	- array assignment of unpacked arrays is currently not supported
+	- array literals are currently not supported
 
 - SystemVerilog interfaces (SVIs) are supported. Modports for specifying whether
   ports are inputs or outputs are supported.
+
+- Assignments within expressions are supported.
 
 
 Building the documentation
 ==========================
 
 Note that there is no need to build the manual if you just want to read it.
-Simply download the PDF from http://www.clifford.at/yosys/documentation.html
-instead.
+Simply visit https://yosys.readthedocs.io/en/latest/ instead.
 
-On Ubuntu, texlive needs these packages to be able to build the manual:
+In addition to those packages listed above for building Yosys from source, the
+following are used for building the website: 
 
-	sudo apt-get install texlive-binaries
-	sudo apt-get install texlive-science      # install algorithm2e.sty
-	sudo apt-get install texlive-bibtex-extra # gets multibib.sty
-	sudo apt-get install texlive-fonts-extra  # gets skull.sty and dsfont.sty
-	sudo apt-get install texlive-publishers   # IEEEtran.cls
+	$ sudo apt install pdf2svg faketime
 
-Also the non-free font luximono should be installed, there is unfortunately
-no Ubuntu package for this so it should be installed separately using
-`getnonfreefonts`:
+PDFLaTeX, included with most LaTeX distributions, is also needed during the
+build process for the website.  Or, run the following:
 
-	wget https://tug.org/fonts/getnonfreefonts/install-getnonfreefonts
-	sudo texlua install-getnonfreefonts # will install to /usr/local by default, can be changed by editing BINDIR at MANDIR at the top of the script
-	getnonfreefonts luximono # installs to /home/user/texmf
+	$ sudo apt install texlive-latex-base texlive-latex-extra latexmk
 
-Then execute, from the root of the repository:
+The Python package, Sphinx, is needed along with those listed in
+`docs/source/requirements.txt`:
 
-	make manual
+	$ pip install -U sphinx -r docs/source/requirements.txt
 
-Notes:
-
-- To run `make manual` you need to have installed Yosys with `make install`,
-  otherwise it will fail on finding `kernel/yosys.h` while building
-  `PRESENTATION_Prog`.
+From the root of the repository, run `make docs`.  This will build/rebuild yosys
+as necessary before generating the website documentation from the yosys help
+commands.  To build for pdf instead of html, call 
+`make docs DOC_TARGET=latexpdf`.

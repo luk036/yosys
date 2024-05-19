@@ -1,7 +1,7 @@
 /*
  *  yosys -- Yosys Open SYnthesis Suite
  *
- *  Copyright (C) 2012  Clifford Wolf <clifford@clifford.at>
+ *  Copyright (C) 2012  Claire Xenia Wolf <claire@yosyshq.com>
  *
  *  Permission to use, copy, modify, and/or distribute this software for any
  *  purpose with or without fee is hereby granted, provided that the above
@@ -236,10 +236,10 @@ LibertyAst *LibertyParser::parse()
 
 		if (tok == ':' && ast->value.empty()) {
 			tok = lexer(ast->value);
-			if (tok != 'v')
-				error();
-			tok = lexer(str);
-			while (tok == '+' || tok == '-' || tok == '*' || tok == '/') {
+			if (tok == 'v') {
+    				tok = lexer(str);
+			}
+			while (tok == '+' || tok == '-' || tok == '*' || tok == '/' || tok == '!') {
 				ast->value += tok;
 				tok = lexer(str);
 				if (tok != 'v')
@@ -314,8 +314,7 @@ LibertyAst *LibertyParser::parse()
 					switch(tok)
 					{
 					case 'n':
-						error("Unexpected newline.");
-						break;
+					  continue;
 					case '[':
 					case ']':
 					case '}':
@@ -384,7 +383,7 @@ void LibertyParser::error(const std::string &str)
 	exit(1);
 }
 
-/**** BEGIN: http://svn.clifford.at/tools/trunk/examples/check.h ****/
+/**** BEGIN: http://svn.clairexen.net/tools/trunk/examples/check.h ****/
 
 #define CHECK_NV(result, check)                                      \
    do {                                                              \
@@ -405,7 +404,7 @@ void LibertyParser::error(const std::string &str)
 	 }                                                               \
    } while(0)
 
-/**** END: http://svn.clifford.at/tools/trunk/examples/check.h ****/
+/**** END: http://svn.clairexen.net/tools/trunk/examples/check.h ****/
 
 LibertyAst *find_non_null(LibertyAst *node, const char *name)
 {

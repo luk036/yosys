@@ -1,7 +1,7 @@
 /*
  *  yosys -- Yosys Open SYnthesis Suite
  *
- *  Copyright (C) 2012  Clifford Wolf <clifford@clifford.at>
+ *  Copyright (C) 2012  Claire Xenia Wolf <claire@yosyshq.com>
  *
  *  Permission to use, copy, modify, and/or distribute this software for any
  *  purpose with or without fee is hereby granted, provided that the above
@@ -44,6 +44,11 @@ struct SynthGowinPass : public ScriptPass
 		log("        write the design to the specified Verilog netlist file. writing of an\n");
 		log("        output file is omitted if this parameter is not specified.\n");
 		log("\n");
+		log("    -json <file>\n");
+		log("        write the design to the specified JSON netlist file. writing of an\n");
+		log("        output file is omitted if this parameter is not specified.\n");
+		log("        This disables features not yet supported by nexpnr-gowin.\n");
+		log("\n");
 		log("    -run <from_label>:<to_label>\n");
 		log("        only run the commands between the labels (see below). an empty\n");
 		log("        from label is synonymous to 'begin', and empty to label is\n");
@@ -70,8 +75,16 @@ struct SynthGowinPass : public ScriptPass
 		log("    -noiopads\n");
 		log("        do not emit IOB at top level ports\n");
 		log("\n");
-		log("    -abc9\n");
-		log("        use new ABC9 flow (EXPERIMENTAL)\n");
+		log("    -noalu\n");
+		log("        do not use ALU cells\n");
+		log("\n");
+		log("    -noabc9\n");
+		log("        disable use of new ABC9 flow\n");
+		log("\n");
+		log("    -no-rw-check\n");
+		log("        marks all recognized read ports as \"return don't-care value on\n");
+		log("        read/write collision\" (same result as setting the no_rw_check\n");
+		log("        attribute on all memories).\n");
 		log("\n");
 		log("\n");
 		log("The following commands are executed by this synthesis command:\n");
@@ -79,21 +92,24 @@ struct SynthGowinPass : public ScriptPass
 		log("\n");
 	}
 
-	string top_opt, vout_file;
-	bool retime, nobram, nolutram, flatten, nodffe, nowidelut, abc9, noiopads;
+	string top_opt, vout_file, json_file;
+	bool retime, nobram, nolutram, flatten, nodffe, nowidelut, abc9, noiopads, noalu, no_rw_check;
 
 	void clear_flags() override
 	{
 		top_opt = "-auto-top";
 		vout_file = "";
+		json_file = "";
 		retime = false;
 		flatten = true;
 		nobram = false;
 		nodffe = false;
 		nolutram = false;
 		nowidelut = false;
-		abc9 = false;
+		abc9 = true;
 		noiopads = false;
+		noalu = false;
+		no_rw_check = false;
 	}
 
 	void execute(std::vector<std::string> args, RTLIL::Design *design) override
@@ -110,6 +126,10 @@ struct SynthGowinPass : public ScriptPass
 			}
 			if (args[argidx] == "-vout" && argidx+1 < args.size()) {
 				vout_file = args[++argidx];
+				continue;
+			}
+			if (args[argidx] == "-json" && argidx+1 < args.size()) {
+				json_file = args[++argidx];
 				continue;
 			}
 			if (args[argidx] == "-run" && argidx+1 < args.size()) {
@@ -144,12 +164,24 @@ struct SynthGowinPass : public ScriptPass
 				nowidelut = true;
 				continue;
 			}
+			if (args[argidx] == "-noalu") {
+				noalu = true;
+				continue;
+			}
 			if (args[argidx] == "-abc9") {
-				abc9 = true;
+				// removed, ABC9 is on by default.
+				continue;
+			}
+			if (args[argidx] == "-noabc9") {
+				abc9 = false;
 				continue;
 			}
 			if (args[argidx] == "-noiopads") {
 				noiopads = true;
+				continue;
+			}
+			if (args[argidx] == "-no-rw-check") {
+				no_rw_check = true;
 				continue;
 			}
 			break;
@@ -169,9 +201,16 @@ struct SynthGowinPass : public ScriptPass
 
 	void script() override
 	{
+		std::string no_rw_check_opt = "";
+		if (no_rw_check)
+			no_rw_check_opt = " -no-rw-check";
+		if (help_mode)
+			no_rw_check_opt = " [-no-rw-check]";
+
 		if (check_label("begin"))
 		{
 			run("read_verilog -specify -lib +/gowin/cells_sim.v");
+			run("read_verilog -specify -lib +/gowin/cells_xtra.v");
 			run(stringf("hierarchy -check %s", help_mode ? "-top <top>" : top_opt.c_str()));
 		}
 
@@ -185,20 +224,22 @@ struct SynthGowinPass : public ScriptPass
 
 		if (check_label("coarse"))
 		{
-			run("synth -run coarse");
+			run("synth -run coarse" + no_rw_check_opt);
 		}
 
-		if (!nobram && check_label("map_bram", "(skip if -nobram)"))
+		if (check_label("map_ram"))
 		{
-			run("memory_bram -rules +/gowin/brams.txt");
-			run("techmap -map +/gowin/brams_map.v");
-		}
-
-		if (!nolutram && check_label("map_lutram", "(skip if -nolutram)"))
-		{
-			run("memory_bram -rules +/gowin/lutrams.txt");
-			run("techmap -map +/gowin/lutrams_map.v");
-			run("setundef -params -zero t:RAM16S4");
+			std::string args = "";
+			if (help_mode)
+				args += " [-no-auto-block] [-no-auto-distributed]";
+			else {
+				if (nobram)
+					args += " -no-auto-block";
+				if (nolutram)
+					args += " -no-auto-distributed";
+			}
+			run("memory_libmap -lib +/gowin/lutrams.txt -lib +/gowin/brams.txt" + args, "(-no-auto-block if -nobram, -no-auto-distributed if -nolutram)");
+			run("techmap -map +/gowin/lutrams_map.v -map +/gowin/brams_map.v");
 		}
 
 		if (check_label("map_ffram"))
@@ -210,11 +251,17 @@ struct SynthGowinPass : public ScriptPass
 
 		if (check_label("map_gates"))
 		{
-			run("techmap -map +/techmap.v -map +/gowin/arith_map.v");
+			if (noalu) {
+				run("techmap -map +/techmap.v");
+			} else {
+				run("techmap -map +/techmap.v -map +/gowin/arith_map.v");
+			}
 			run("opt -fast");
 			if (retime || help_mode)
 				run("abc -dff -D 1", "(only if -retime)");
-			run("splitnets");
+			if (!noiopads || help_mode)
+				run("iopadmap -bits -inpad IBUF O:I -outpad OBUF I:O "
+					"-toutpad TBUF ~OEN:I:O -tinoutpad IOBUF ~OEN:O:I:IO", "(unless -noiopads)");
 		}
 
 		if (check_label("map_ffs"))
@@ -251,9 +298,8 @@ struct SynthGowinPass : public ScriptPass
 			run("opt_lut_ins -tech gowin");
 			run("setundef -undriven -params -zero");
 			run("hilomap -singleton -hicell VCC V -locell GND G");
-			if (!noiopads || help_mode)
-				run("iopadmap -bits -inpad IBUF O:I -outpad OBUF I:O "
-					"-toutpad TBUF OEN:I:O -tinoutpad IOBUF OEN:O:I:IO", "(unless -noiopads)");
+			if (!vout_file.empty() || help_mode) // vendor output requires 1-bit wires
+				run("splitnets -ports", "(only if -vout used)");
 			run("clean");
 			run("autoname");
 		}
@@ -263,13 +309,17 @@ struct SynthGowinPass : public ScriptPass
 			run("hierarchy -check");
 			run("stat");
 			run("check -noinit");
+			run("blackbox =A:whitebox");
 		}
 
 		if (check_label("vout"))
 		{
 			if (!vout_file.empty() || help_mode)
-				 run(stringf("write_verilog -decimal -attr2comment -defparam -renameprefix gen %s",
+				 run(stringf("write_verilog -simple-lhs -decimal -attr2comment -defparam -renameprefix gen %s",
 						help_mode ? "<file-name>" : vout_file.c_str()));
+			if (!json_file.empty() || help_mode)
+				 run(stringf("write_json %s",
+						help_mode ? "<file-name>" : json_file.c_str()));
 		}
 	}
 } SynthGowinPass;

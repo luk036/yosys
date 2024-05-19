@@ -1,7 +1,7 @@
 /*
  *  yosys -- Yosys Open SYnthesis Suite
  *
- *  Copyright (C) 2012  Clifford Wolf <clifford@clifford.at>
+ *  Copyright (C) 2012  Claire Xenia Wolf <claire@yosyshq.com>
  *
  *  Permission to use, copy, modify, and/or distribute this software for any
  *  purpose with or without fee is hereby granted, provided that the above
@@ -20,6 +20,8 @@
 #include "blifparse.h"
 
 YOSYS_NAMESPACE_BEGIN
+
+const int lut_input_plane_limit = 12;
 
 static bool read_next_line(char *&buffer, size_t &buffer_size, int &line_count, std::istream &f)
 {
@@ -65,17 +67,21 @@ static std::pair<RTLIL::IdString, int> wideports_split(std::string name)
 	for (int i = 0; i+1 < GetSize(name); i++) {
 		if (name[i] == '[')
 			pos = i;
-		else if (name[i] < '0' || name[i] > '9')
+		else if (name[i] != '-' && (name[i] < '0' || name[i] > '9'))
+			pos = -1;
+		else if (name[i] == '-' && ((i != pos+1) || name[i+1] == ']'))
+			pos = -1;
+		else if (i == pos+2 && name[i] == '0' && name[i-1] == '-')
 			pos = -1;
 		else if (i == pos+1 && name[i] == '0' && name[i+1] != ']')
 			pos = -1;
 	}
 
 	if (pos >= 0)
-		return std::pair<RTLIL::IdString, int>("\\" + name.substr(0, pos), atoi(name.c_str() + pos+1)+1);
+		return std::pair<RTLIL::IdString, int>("\\" + name.substr(0, pos), atoi(name.c_str() + pos+1));
 
 failed:
-	return std::pair<RTLIL::IdString, int>("\\" + name, 0);
+	return std::pair<RTLIL::IdString, int>(RTLIL::IdString(), 0);
 }
 
 void parse_blif(RTLIL::Design *design, std::istream &f, IdString dff_name, bool run_clean, bool sop_mode, bool wideports)
@@ -162,7 +168,10 @@ void parse_blif(RTLIL::Design *design, std::istream &f, IdString dff_name, bool 
 					goto error;
 				module = new RTLIL::Module;
 				lastcell = nullptr;
-				module->name = RTLIL::escape_id(strtok(NULL, " \t\r\n"));
+				char *name = strtok(NULL, " \t\r\n");
+				if (name == nullptr)
+					goto error;
+				module->name = RTLIL::escape_id(name);
 				obj_attributes = &module->attributes;
 				obj_parameters = nullptr;
 				if (design->module(module->name))
@@ -247,6 +256,16 @@ void parse_blif(RTLIL::Design *design, std::istream &f, IdString dff_name, bool 
 				continue;
 			}
 
+			if (!strcmp(cmd, ".area") || !strcmp(cmd, ".delay") || !strcmp(cmd, ".wire_load_slope") || !strcmp(cmd, ".wire") ||
+			    !strcmp(cmd, ".input_arrival") || !strcmp(cmd, ".default_input_arrival") || !strcmp(cmd, ".output_required") ||
+			    !strcmp(cmd, ".default_output_required") || !strcmp(cmd, ".input_drive") || !strcmp(cmd, ".default_input_drive") ||
+			    !strcmp(cmd, ".max_input_load") || !strcmp(cmd, ".default_max_input_load") || !strcmp(cmd, ".output_load") ||
+			    !strcmp(cmd, ".default_output_load"))
+			{
+				log_warning("Blif delay constraints (%s) are not supported.", cmd);
+				continue;
+			}
+
 			if (!strcmp(cmd, ".inputs") || !strcmp(cmd, ".outputs"))
 			{
 				char *p;
@@ -263,8 +282,8 @@ void parse_blif(RTLIL::Design *design, std::istream &f, IdString dff_name, bool 
 
 					if (wideports) {
 						std::pair<RTLIL::IdString, int> wp = wideports_split(p);
-						if (wp.second > 0) {
-							wideports_cache[wp.first].first = std::max(wideports_cache[wp.first].first, wp.second);
+						if (!wp.first.empty() && wp.second >= 0) {
+							wideports_cache[wp.first].first = std::max(wideports_cache[wp.first].first, wp.second + 1);
 							wideports_cache[wp.first].second = !strcmp(cmd, ".inputs");
 						}
 					}
@@ -375,6 +394,7 @@ void parse_blif(RTLIL::Design *design, std::istream &f, IdString dff_name, bool 
 
 				IdString celltype = RTLIL::escape_id(p);
 				RTLIL::Cell *cell = module->addCell(NEW_ID, celltype);
+				RTLIL::Module *cell_mod = design->module(celltype);
 
 				dict<RTLIL::IdString, dict<int, SigBit>> cell_wideports_cache;
 
@@ -387,10 +407,10 @@ void parse_blif(RTLIL::Design *design, std::istream &f, IdString dff_name, bool 
 
 					if (wideports) {
 						std::pair<RTLIL::IdString, int> wp = wideports_split(p);
-						if (wp.second > 0)
-							cell_wideports_cache[wp.first][wp.second-1] = blif_wire(q);
-						else
+						if (wp.first.empty())
 							cell->setPort(RTLIL::escape_id(p), *q ? blif_wire(q) : SigSpec());
+						else
+							cell_wideports_cache[wp.first][wp.second] = blif_wire(q);
 					} else {
 						cell->setPort(RTLIL::escape_id(p), *q ? blif_wire(q) : SigSpec());
 					}
@@ -399,14 +419,26 @@ void parse_blif(RTLIL::Design *design, std::istream &f, IdString dff_name, bool 
 				for (auto &it : cell_wideports_cache)
 				{
 					int width = 0;
+					int offset = 0;
+					bool upto = false;
 					for (auto &b : it.second)
 						width = std::max(width, b.first + 1);
+
+					if (cell_mod) {
+						Wire *cell_port = cell_mod->wire(it.first);
+						if (cell_port && (cell_port->port_input || cell_port->port_output)) {
+							offset = cell_port->start_offset;
+							upto = cell_port->upto;
+							width = cell_port->width;
+						}
+					}
 
 					SigSpec sig;
 
 					for (int i = 0; i < width; i++) {
-						if (it.second.count(i))
-							sig.append(it.second.at(i));
+						int idx = offset + (upto ? width - 1 - i: i);
+						if (it.second.count(idx))
+							sig.append(it.second.at(idx));
 						else
 							sig.append(module->addWire(NEW_ID));
 					}
@@ -493,6 +525,11 @@ void parse_blif(RTLIL::Design *design, std::istream &f, IdString dff_name, bool 
 					sopmode = -1;
 					lastcell = sopcell;
 				}
+				else if (input_sig.size() > lut_input_plane_limit)
+				{
+					err_reason = stringf("names' input plane must have fewer than %d signals.", lut_input_plane_limit + 1);
+					goto error_with_reason;
+				}
 				else
 				{
 					RTLIL::Cell *cell = module->addCell(NEW_ID, ID($lut));
@@ -556,7 +593,7 @@ void parse_blif(RTLIL::Design *design, std::istream &f, IdString dff_name, bool 
 
 		if (lutptr)
 		{
-			if (input_len > 12)
+			if (input_len > lut_input_plane_limit)
 				goto error;
 
 			for (int i = 0; i < (1 << input_len); i++) {

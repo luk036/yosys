@@ -1,8 +1,8 @@
 /*
  *  yosys -- Yosys Open SYnthesis Suite
  *
- *  Copyright (C) 2012  Clifford Wolf <clifford@clifford.at>
- *                2019  Nina Engelhardt <nak@symbioticeda.com>
+ *  Copyright (C) 2012  Claire Xenia Wolf <claire@yosyshq.com>
+ *                2019  N. Engelhardt <nak@yosyshq.com>
  *
  *  Permission to use, copy, modify, and/or distribute this software for any
  *  purpose with or without fee is hereby granted, provided that the above
@@ -49,7 +49,8 @@ struct ScratchpadPass : public Pass {
 		log("        copy the value of the first identifier to the second identifier.\n");
 		log("\n");
 		log("    -assert <identifier> <value>\n");
-		log("        assert that the entry for the given identifier is set to the given value.\n");
+		log("        assert that the entry for the given identifier is set to the given\n");
+		log("        value.\n");
 		log("\n");
 		log("    -assert-set <identifier>\n");
 		log("        assert that the entry for the given identifier exists.\n");

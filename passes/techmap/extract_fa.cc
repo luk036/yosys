@@ -1,7 +1,7 @@
 /*
  *  yosys -- Yosys Open SYnthesis Suite
  *
- *  Copyright (C) 2012  Clifford Wolf <clifford@clifford.at>
+ *  Copyright (C) 2012  Claire Xenia Wolf <claire@yosyshq.com>
  *
  *  Permission to use, copy, modify, and/or distribute this software for any
  *  purpose with or without fee is hereby granted, provided that the above
@@ -33,7 +33,7 @@ struct ExtractFaConfig
 	int maxbreadth = 6;
 };
 
-// http://svn.clifford.at/handicraft/2016/bindec/bindec.c
+// http://svn.clairexen.net/handicraft/2016/bindec/bindec.c
 int bindec(unsigned char v)
 {
 	int r = v & 1;
@@ -281,7 +281,7 @@ struct ExtractFaWorker
 	void assign_new_driver(SigBit bit, SigBit new_driver)
 	{
 		Cell *cell = driver.at(bit);
-		if (sigmap(cell->getPort(ID::Y)) == bit) {
+		if (sigmap(cell->getPort(ID::Y)) == SigSpec(bit)) {
 			cell->setPort(ID::Y, module->addWire(NEW_ID));
 			module->connect(bit, new_driver);
 		}

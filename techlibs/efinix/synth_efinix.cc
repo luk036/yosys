@@ -1,8 +1,8 @@
 /*
  *  yosys -- Yosys Open SYnthesis Suite
  *
- *  Copyright (C) 2019  Miodrag Milanovic <miodrag@symbioticeda.com>
- *  Copyright (C) 2019  Clifford Wolf <clifford@clifford.at>
+ *  Copyright (C) 2019  Miodrag Milanovic <micko@yosyshq.com>
+ *  Copyright (C) 2019  Claire Xenia Wolf <claire@yosyshq.com>
  *
  *  Permission to use, copy, modify, and/or distribute this software for any
  *  purpose with or without fee is hereby granted, provided that the above
@@ -158,11 +158,17 @@ struct SynthEfinixPass : public ScriptPass
 			run("synth -run coarse");
 		}
 
-		if (!nobram || check_label("map_bram", "(skip if -nobram)"))
+		if (check_label("map_ram"))
 		{
-			run("memory_bram -rules +/efinix/brams.txt");
+			std::string args = "";
+			if (help_mode)
+				args += " [-no-auto-block]";
+			else {
+				if (nobram)
+					args += " -no-auto-block";
+			}
+			run("memory_libmap -lib +/efinix/brams.txt" + args, "(-no-auto-block if -nobram)");
 			run("techmap -map +/efinix/brams_map.v");
-			run("setundef -zero -params t:EFX_RAM_5K");
 		}
 
 		if (check_label("map_ffram"))
@@ -213,6 +219,7 @@ struct SynthEfinixPass : public ScriptPass
 			run("hierarchy -check");
 			run("stat");
 			run("check -noinit");
+			run("blackbox =A:whitebox");
 		}
 
 		if (check_label("edif"))

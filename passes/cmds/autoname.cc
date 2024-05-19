@@ -1,7 +1,7 @@
 /*
  *  yosys -- Yosys Open SYnthesis Suite
  *
- *  Copyright (C) 2012  Clifford Wolf <clifford@clifford.at>
+ *  Copyright (C) 2012  Claire Xenia Wolf <claire@yosyshq.com>
  *
  *  Permission to use, copy, modify, and/or distribute this software for any
  *  purpose with or without fee is hereby granted, provided that the above
@@ -22,26 +22,21 @@
 USING_YOSYS_NAMESPACE
 PRIVATE_NAMESPACE_BEGIN
 
-int autoname_worker(Module *module)
+int autoname_worker(Module *module, const dict<Wire*, int>& wire_score)
 {
-	dict<Cell*, pair<int, IdString>> proposed_cell_names;
-	dict<Wire*, pair<int, IdString>> proposed_wire_names;
-	dict<Wire*, int> wire_score;
+	dict<Cell*, pair<int, string>> proposed_cell_names;
+	dict<Wire*, pair<int, string>> proposed_wire_names;
 	int best_score = -1;
-
-	for (auto cell : module->selected_cells())
-	for (auto &conn : cell->connections())
-	for (auto bit : conn.second)
-		if (bit.wire != nullptr)
-			wire_score[bit.wire]++;
 
 	for (auto cell : module->selected_cells()) {
 		if (cell->name[0] == '$') {
 			for (auto &conn : cell->connections()) {
-				string suffix = stringf("_%s_%s", log_id(cell->type), log_id(conn.first));
+				string suffix;
 				for (auto bit : conn.second)
 					if (bit.wire != nullptr && bit.wire->name[0] != '$') {
-						IdString new_name(bit.wire->name.str() + suffix);
+						if (suffix.empty())
+							suffix = stringf("_%s_%s", log_id(cell->type), log_id(conn.first));
+						string new_name(bit.wire->name.str() + suffix);
 						int score = wire_score.at(bit.wire);
 						if (cell->output(conn.first)) score = 0;
 						score = 10000*score + new_name.size();
@@ -54,10 +49,12 @@ int autoname_worker(Module *module)
 			}
 		} else {
 			for (auto &conn : cell->connections()) {
-				string suffix = stringf("_%s", log_id(conn.first));
+				string suffix;
 				for (auto bit : conn.second)
 					if (bit.wire != nullptr && bit.wire->name[0] == '$' && !bit.wire->port_id) {
-						IdString new_name(cell->name.str() + suffix);
+						if (suffix.empty())
+							suffix = stringf("_%s", log_id(conn.first));
+						string new_name(cell->name.str() + suffix);
 						int score = wire_score.at(bit.wire);
 						if (cell->output(conn.first)) score = 0;
 						score = 10000*score + new_name.size();
@@ -74,7 +71,7 @@ int autoname_worker(Module *module)
 	for (auto &it : proposed_cell_names) {
 		if (best_score*2 < it.second.first)
 			continue;
-		IdString n = module->uniquify(it.second.second);
+		IdString n = module->uniquify(IdString(it.second.second));
 		log_debug("Rename cell %s in %s to %s.\n", log_id(it.first), log_id(module), log_id(n));
 		module->rename(it.first, n);
 	}
@@ -82,7 +79,7 @@ int autoname_worker(Module *module)
 	for (auto &it : proposed_wire_names) {
 		if (best_score*2 < it.second.first)
 			continue;
-		IdString n = module->uniquify(it.second.second);
+		IdString n = module->uniquify(IdString(it.second.second));
 		log_debug("Rename wire %s in %s to %s.\n", log_id(it.first), log_id(module), log_id(n));
 		module->rename(it.first, n);
 	}
@@ -118,10 +115,17 @@ struct AutonamePass : public Pass {
 
 		for (auto module : design->selected_modules())
 		{
+			dict<Wire*, int> wire_score;
+			for (auto cell : module->selected_cells())
+			for (auto &conn : cell->connections())
+			for (auto bit : conn.second)
+				if (bit.wire != nullptr)
+					wire_score[bit.wire]++;
+
 			int count = 0, iter = 0;
 			while (1) {
 				iter++;
-				int n = autoname_worker(module);
+				int n = autoname_worker(module, wire_score);
 				if (!n) break;
 				count += n;
 			}

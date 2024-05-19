@@ -1,7 +1,7 @@
 /*
  *  yosys -- Yosys Open SYnthesis Suite
  *
- *  Copyright (C) 2012  Clifford Wolf <clifford@clifford.at>
+ *  Copyright (C) 2012  Claire Xenia Wolf <claire@yosyshq.com>
  *
  *  Permission to use, copy, modify, and/or distribute this software for any
  *  purpose with or without fee is hereby granted, provided that the above
@@ -179,7 +179,7 @@ struct MuxcoverWorker
 
 	int prepare_decode_mux(SigBit &A, SigBit B, SigBit sel, SigBit bit)
 	{
-		if (A == B || sel == State::Sx)
+		if (A == B || A == State::Sx || B == State::Sx || sel == State::Sx)
 			return 0;
 
 		tuple<SigBit, SigBit, SigBit> key(A, B, sel);
@@ -195,9 +195,6 @@ struct MuxcoverWorker
 		std::get<1>(entry).insert(bit);
 
 		if (std::get<2>(entry))
-			return 0;
-
-		if (A == State::Sx || B == State::Sx)
 			return 0;
 
 		return cost_dmux / GetSize(std::get<1>(entry));

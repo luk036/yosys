@@ -1,7 +1,7 @@
 /*
  *  yosys -- Yosys Open SYnthesis Suite
  *
- *  Copyright (C) 2012  Clifford Wolf <clifford@clifford.at>
+ *  Copyright (C) 2012  Claire Xenia Wolf <claire@yosyshq.com>
  *
  *  Permission to use, copy, modify, and/or distribute this software for any
  *  purpose with or without fee is hereby granted, provided that the above
@@ -117,6 +117,9 @@ struct DesignPass : public Pass {
 		RTLIL::Design *copy_from_design = NULL, *copy_to_design = NULL;
 		std::string save_name, load_name, as_name, delete_name;
 		std::vector<RTLIL::Module*> copy_src_modules;
+
+		if (!design)
+			log_cmd_error("No default design.\n");
 
 		size_t argidx;
 		for (argidx = 1; argidx < args.size(); argidx++)
@@ -280,7 +283,7 @@ struct DesignPass : public Pass {
 				done[mod->name] = prefix;
 			}
 
-			while (!queue.empty())
+			while (!queue.empty() && copy_from_design)
 			{
 				pool<Module*> old_queue;
 				old_queue.swap(queue);

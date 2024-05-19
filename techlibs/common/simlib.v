@@ -1,7 +1,7 @@
 /*
  *  yosys -- Yosys Open SYnthesis Suite
  *
- *  Copyright (C) 2012  Clifford Wolf <clifford@clifford.at>
+ *  Copyright (C) 2012  Claire Xenia Wolf <claire@yosyshq.com>
  *
  *  Permission to use, copy, modify, and/or distribute this software for any
  *  purpose with or without fee is hereby granted, provided that the above
@@ -237,7 +237,7 @@ endmodule
 
 //  |---v---|---v---|---v---|---v---|---v---|---v---|---v---|---v---|---v---|---v---|
 //-
-//-     $reduce_and (A, B, Y)
+//-     $reduce_and (A, Y)
 //-
 //- An AND reduction. This corresponds to the Verilog unary prefix '&' operator.
 //-
@@ -264,7 +264,7 @@ endmodule
 
 //  |---v---|---v---|---v---|---v---|---v---|---v---|---v---|---v---|---v---|---v---|
 //-
-//-     $reduce_or (A, B, Y)
+//-     $reduce_or (A, Y)
 //-
 //- An OR reduction. This corresponds to the Verilog unary prefix '|' operator.
 //-
@@ -291,7 +291,7 @@ endmodule
 
 //  |---v---|---v---|---v---|---v---|---v---|---v---|---v---|---v---|---v---|---v---|
 //-
-//-     $reduce_xor (A, B, Y)
+//-     $reduce_xor (A, Y)
 //-
 //- A XOR reduction. This corresponds to the Verilog unary prefix '^' operator.
 //-
@@ -318,7 +318,7 @@ endmodule
 
 //  |---v---|---v---|---v---|---v---|---v---|---v---|---v---|---v---|---v---|---v---|
 //-
-//-     $reduce_xnor (A, B, Y)
+//-     $reduce_xnor (A, Y)
 //-
 //- A XNOR reduction. This corresponds to the Verilog unary prefix '~^' operator.
 //-
@@ -345,7 +345,7 @@ endmodule
 
 //  |---v---|---v---|---v---|---v---|---v---|---v---|---v---|---v---|---v---|---v---|
 //-
-//-     $reduce_bool (A, B, Y)
+//-     $reduce_bool (A, Y)
 //-
 //- An OR reduction. This cell type is used instead of $reduce_or when a signal is
 //- implicitly converted to a boolean signal, e.g. for operands of '&&' and '||'.
@@ -902,18 +902,34 @@ endgenerate
 endmodule
 
 // --------------------------------------------------------
-
+//  |---v---|---v---|---v---|---v---|---v---|---v---|---v---|---v---|---v---|---v---|
+//-
+//-     $macc (A, B, Y)
+//-
+//- Multiply and accumulate.
+//- A building block for summing any number of negated and unnegated signals
+//- and arithmetic products of pairs of signals. Cell port A concatenates pairs
+//- of signals to be multiplied together. When the second signal in a pair is zero
+//- length, a constant 1 is used instead as the second factor. Cell port B
+//- concatenates 1-bit-wide signals to also be summed, such as "carry in" in adders.
+//- Typically created by the `alumacc` pass, which transforms $add and $mul
+//- into $macc cells.
 module \$macc (A, B, Y);
 
 parameter A_WIDTH = 0;
 parameter B_WIDTH = 0;
 parameter Y_WIDTH = 0;
+// CONFIG determines the layout of A, as explained below
 parameter CONFIG = 4'b0000;
 parameter CONFIG_WIDTH = 4;
 
-input [A_WIDTH-1:0] A;
-input [B_WIDTH-1:0] B;
-output reg [Y_WIDTH-1:0] Y;
+// In the terms used for this cell, there's mixed meanings for the term "port". To disambiguate:
+// A cell port is for example the A input (it is constructed in C++ as cell->setPort(ID::A, ...))
+// Multiplier ports are pairs of multiplier inputs ("factors").
+// If the second signal in such a pair is zero length, no multiplication is necessary, and the first signal is just added to the sum.
+input [A_WIDTH-1:0] A; // Cell port A is the concatenation of all arithmetic ports
+input [B_WIDTH-1:0] B; // Cell port B is the concatenation of single-bit unsigned signals to be also added to the sum
+output reg [Y_WIDTH-1:0] Y; // Output sum
 
 // Xilinx XSIM does not like $clog2() below..
 function integer my_clog2;
@@ -929,9 +945,41 @@ function integer my_clog2;
 	end
 endfunction
 
+// Bits that a factor's length field in CONFIG per factor in cell port A
 localparam integer num_bits = CONFIG[3:0] > 0 ? CONFIG[3:0] : 1;
+// Number of multiplier ports
 localparam integer num_ports = (CONFIG_WIDTH-4) / (2 + 2*num_bits);
+// Minium bit width of an induction variable to iterate over all bits of cell port A
 localparam integer num_abits = my_clog2(A_WIDTH) > 0 ? my_clog2(A_WIDTH) : 1;
+
+// In this pseudocode, u(foo) means an unsigned int that's foo bits long.
+// The CONFIG parameter carries the following information:
+//	struct CONFIG {
+//		u4 num_bits;
+//		struct port_field {
+//			bool is_signed;
+//			bool is_subtract;
+//			u(num_bits) factor1_len;
+//			u(num_bits) factor2_len;
+//		}[num_ports];
+//	};
+
+// The A cell port carries the following information:
+//	struct A {
+//		u(CONFIG.port_field[0].factor1_len) port0factor1;
+//		u(CONFIG.port_field[0].factor2_len) port0factor2;
+//		u(CONFIG.port_field[1].factor1_len) port1factor1;
+//		u(CONFIG.port_field[1].factor2_len) port1factor2;
+//		...
+//	};
+// and log(sizeof(A)) is num_abits.
+// No factor1 may have a zero length.
+// A factor2 having a zero length implies factor2 is replaced with a constant 1.
+
+// Additionally, B is an array of 1-bit-wide unsigned integers to also be summed up.
+// Finally, we have:
+// Y = port0factor1 * port0factor2 + port1factor1 * port1factor2 + ...
+//     * B[0] + B[1] + ...
 
 function [2*num_ports*num_abits-1:0] get_port_offsets;
 	input [CONFIG_WIDTH-1:0] cfg;
@@ -1279,14 +1327,36 @@ parameter WIDTH = 0;
 
 input [WIDTH-1:0] A, B;
 input S;
-output reg [WIDTH-1:0] Y;
+output [WIDTH-1:0] Y;
 
-always @* begin
-	if (S)
-		Y = B;
-	else
-		Y = A;
-end
+assign Y = S ? B : A;
+
+endmodule
+
+// --------------------------------------------------------
+
+module \$bmux (A, S, Y);
+
+parameter WIDTH = 0;
+parameter S_WIDTH = 0;
+
+input [(WIDTH << S_WIDTH)-1:0] A;
+input [S_WIDTH-1:0] S;
+output [WIDTH-1:0] Y;
+
+wire [WIDTH-1:0] bm0_out, bm1_out;
+
+generate
+	if (S_WIDTH > 1) begin:muxlogic
+		\$bmux #(.WIDTH(WIDTH), .S_WIDTH(S_WIDTH-1)) bm0 (.A(A[(WIDTH << (S_WIDTH - 1))-1:0]), .S(S[S_WIDTH-2:0]), .Y(bm0_out));
+		\$bmux #(.WIDTH(WIDTH), .S_WIDTH(S_WIDTH-1)) bm1 (.A(A[(WIDTH << S_WIDTH)-1:WIDTH << (S_WIDTH - 1)]), .S(S[S_WIDTH-2:0]), .Y(bm1_out));
+		assign Y = S[S_WIDTH-1] ? bm1_out : bm0_out;
+	end else if (S_WIDTH == 1) begin:simple
+		assign Y = S ? A[2*WIDTH-1:WIDTH] : A[WIDTH-1:0];
+	end else begin:passthru
+		assign Y = A;
+	end
+endgenerate
 
 endmodule
 
@@ -1309,11 +1379,38 @@ always @* begin
 	Y = A;
 	found_active_sel_bit = 0;
 	for (i = 0; i < S_WIDTH; i = i+1)
-		if (S[i]) begin
-			Y = found_active_sel_bit ? 'bx : B >> (WIDTH*i);
-			found_active_sel_bit = 1;
-		end
+		case (S[i])
+			1'b1: begin
+				Y = found_active_sel_bit ? 'bx : B >> (WIDTH*i);
+				found_active_sel_bit = 1;
+			end
+			1'b0: ;
+			1'bx: begin
+				Y = 'bx;
+				found_active_sel_bit = 'bx;
+			end
+		endcase
 end
+
+endmodule
+
+// --------------------------------------------------------
+
+module \$demux (A, S, Y);
+
+parameter WIDTH = 1;
+parameter S_WIDTH = 1;
+
+input [WIDTH-1:0] A;
+input [S_WIDTH-1:0] S;
+output [(WIDTH << S_WIDTH)-1:0] Y;
+
+genvar i;
+generate
+	for (i = 0; i < (1 << S_WIDTH); i = i + 1) begin:slices
+		assign Y[i*WIDTH+:WIDTH] = (S == i) ? A : 0;
+	end
+endgenerate
 
 endmodule
 
@@ -1326,30 +1423,9 @@ parameter WIDTH = 0;
 parameter LUT = 0;
 
 input [WIDTH-1:0] A;
-output reg Y;
+output Y;
 
-wire lut0_out, lut1_out;
-
-generate
-	if (WIDTH <= 1) begin:simple
-		assign {lut1_out, lut0_out} = LUT;
-	end else begin:complex
-		\$lut #( .WIDTH(WIDTH-1), .LUT(LUT                  ) ) lut0 ( .A(A[WIDTH-2:0]), .Y(lut0_out) );
-		\$lut #( .WIDTH(WIDTH-1), .LUT(LUT >> (2**(WIDTH-1))) ) lut1 ( .A(A[WIDTH-2:0]), .Y(lut1_out) );
-	end
-
-	if (WIDTH > 0) begin:lutlogic
-		always @* begin
-			casez ({A[WIDTH-1], lut0_out, lut1_out})
-				3'b?11: Y = 1'b1;
-				3'b?00: Y = 1'b0;
-				3'b0??: Y = lut0_out;
-				3'b1??: Y = lut1_out;
-				default: Y = 1'bx;
-			endcase
-		end
-	end
-endgenerate
+\$bmux #(.WIDTH(1), .S_WIDTH(WIDTH)) mux(.A(LUT[(1<<WIDTH)-1:0]), .S(A), .Y(Y));
 
 endmodule
 
@@ -1573,6 +1649,43 @@ endmodule
 
 // --------------------------------------------------------
 
+module \$bweqx (A, B, Y);
+
+parameter WIDTH = 0;
+
+input [WIDTH-1:0] A, B;
+output [WIDTH-1:0] Y;
+
+genvar i;
+generate
+	for (i = 0; i < WIDTH; i = i + 1) begin:slices
+		assign Y[i] = A[i] === B[i];
+	end
+endgenerate
+
+endmodule
+
+// --------------------------------------------------------
+
+module \$bwmux (A, B, S, Y);
+
+parameter WIDTH = 0;
+
+input [WIDTH-1:0] A, B;
+input [WIDTH-1:0] S;
+output [WIDTH-1:0] Y;
+
+genvar i;
+generate
+	for (i = 0; i < WIDTH; i = i + 1) begin:slices
+		assign Y[i] = S[i] ? B[i] : A[i];
+	end
+endgenerate
+
+endmodule
+
+// --------------------------------------------------------
+
 module \$assert (A, EN);
 
 input A, EN;
@@ -1671,6 +1784,26 @@ assign Y = 'bx;
 endmodule
 
 // --------------------------------------------------------
+`ifdef SIMLIB_FF
+`ifndef SIMLIB_GLOBAL_CLOCK
+`define SIMLIB_GLOBAL_CLOCK $global_clk
+`endif
+module \$anyinit (D, Q);
+
+parameter WIDTH = 0;
+
+input [WIDTH-1:0] D;
+output reg [WIDTH-1:0] Q;
+
+initial Q <= 'bx;
+
+always @(`SIMLIB_GLOBAL_CLOCK) begin
+	Q <= D;
+end
+
+endmodule
+`endif
+// --------------------------------------------------------
 
 module \$allconst (Y);
 
@@ -1715,6 +1848,46 @@ end
 endmodule
 
 // --------------------------------------------------------
+
+module \$print (EN, TRG, ARGS);
+
+parameter PRIORITY = 0;
+
+parameter FORMAT = "";
+parameter ARGS_WIDTH = 0;
+
+parameter TRG_ENABLE = 1;
+parameter TRG_WIDTH = 0;
+parameter TRG_POLARITY = 0;
+
+input EN;
+input [TRG_WIDTH-1:0] TRG;
+input [ARGS_WIDTH-1:0] ARGS;
+
+endmodule
+
+// --------------------------------------------------------
+
+module \$check (A, EN, TRG, ARGS);
+
+parameter FLAVOR = "";
+parameter PRIORITY = 0;
+
+parameter FORMAT = "";
+parameter ARGS_WIDTH = 0;
+
+parameter TRG_ENABLE = 1;
+parameter TRG_WIDTH = 0;
+parameter TRG_POLARITY = 0;
+
+input A;
+input EN;
+input [TRG_WIDTH-1:0] TRG;
+input [ARGS_WIDTH-1:0] ARGS;
+
+endmodule
+
+// --------------------------------------------------------
 `ifndef SIMLIB_NOSR
 
 module \$sr (SET, CLR, Q);
@@ -1745,6 +1918,9 @@ endmodule
 `endif
 // --------------------------------------------------------
 `ifdef SIMLIB_FF
+`ifndef SIMLIB_GLOBAL_CLOCK
+`define SIMLIB_GLOBAL_CLOCK $global_clk
+`endif
 
 module \$ff (D, Q);
 
@@ -1753,7 +1929,7 @@ parameter WIDTH = 0;
 input [WIDTH-1:0] D;
 output reg [WIDTH-1:0] Q;
 
-always @($global_clk) begin
+always @(`SIMLIB_GLOBAL_CLOCK) begin
 	Q <= D;
 end
 
@@ -1890,6 +2066,30 @@ endmodule
 
 // --------------------------------------------------------
 
+module \$aldff (CLK, ALOAD, AD, D, Q);
+
+parameter WIDTH = 0;
+parameter CLK_POLARITY = 1'b1;
+parameter ALOAD_POLARITY = 1'b1;
+
+input CLK, ALOAD;
+input [WIDTH-1:0] AD;
+input [WIDTH-1:0] D;
+output reg [WIDTH-1:0] Q;
+wire pos_clk = CLK == CLK_POLARITY;
+wire pos_aload = ALOAD == ALOAD_POLARITY;
+
+always @(posedge pos_clk, posedge pos_aload) begin
+	if (pos_aload)
+		Q <= AD;
+	else
+		Q <= D;
+end
+
+endmodule
+
+// --------------------------------------------------------
+
 module \$sdff (CLK, SRST, D, Q);
 
 parameter WIDTH = 0;
@@ -1931,6 +2131,31 @@ wire pos_arst = ARST == ARST_POLARITY;
 always @(posedge pos_clk, posedge pos_arst) begin
 	if (pos_arst)
 		Q <= ARST_VALUE;
+	else if (EN == EN_POLARITY)
+		Q <= D;
+end
+
+endmodule
+
+// --------------------------------------------------------
+
+module \$aldffe (CLK, ALOAD, AD, EN, D, Q);
+
+parameter WIDTH = 0;
+parameter CLK_POLARITY = 1'b1;
+parameter EN_POLARITY = 1'b1;
+parameter ALOAD_POLARITY = 1'b1;
+
+input CLK, ALOAD, EN;
+input [WIDTH-1:0] D;
+input [WIDTH-1:0] AD;
+output reg [WIDTH-1:0] Q;
+wire pos_clk = CLK == CLK_POLARITY;
+wire pos_aload = ALOAD == ALOAD_POLARITY;
+
+always @(posedge pos_clk, posedge pos_aload) begin
+	if (pos_aload)
+		Q <= AD;
 	else if (EN == EN_POLARITY)
 		Q <= D;
 end
@@ -2182,6 +2407,34 @@ end
 
 endmodule
 
+module \$memrd_v2 (CLK, EN, ARST, SRST, ADDR, DATA);
+
+parameter MEMID = "";
+parameter ABITS = 8;
+parameter WIDTH = 8;
+
+parameter CLK_ENABLE = 0;
+parameter CLK_POLARITY = 0;
+parameter TRANSPARENCY_MASK = 0;
+parameter COLLISION_X_MASK = 0;
+parameter ARST_VALUE = 0;
+parameter SRST_VALUE = 0;
+parameter INIT_VALUE = 0;
+parameter CE_OVER_SRST = 0;
+
+input CLK, EN, ARST, SRST;
+input [ABITS-1:0] ADDR;
+output [WIDTH-1:0] DATA;
+
+initial begin
+	if (MEMID != "") begin
+		$display("ERROR: Found non-simulatable instance of $memrd_v2!");
+		$finish;
+	end
+end
+
+endmodule
+
 // --------------------------------------------------------
 
 module \$memwr (CLK, EN, ADDR, DATA);
@@ -2208,6 +2461,31 @@ end
 
 endmodule
 
+module \$memwr_v2 (CLK, EN, ADDR, DATA);
+
+parameter MEMID = "";
+parameter ABITS = 8;
+parameter WIDTH = 8;
+
+parameter CLK_ENABLE = 0;
+parameter CLK_POLARITY = 0;
+parameter PORTID = 0;
+parameter PRIORITY_MASK = 0;
+
+input CLK;
+input [WIDTH-1:0] EN;
+input [ABITS-1:0] ADDR;
+input [WIDTH-1:0] DATA;
+
+initial begin
+	if (MEMID != "") begin
+		$display("ERROR: Found non-simulatable instance of $memwr_v2!");
+		$finish;
+	end
+end
+
+endmodule
+
 // --------------------------------------------------------
 
 module \$meminit (ADDR, DATA);
@@ -2225,6 +2503,30 @@ input [WORDS*WIDTH-1:0] DATA;
 initial begin
 	if (MEMID != "") begin
 		$display("ERROR: Found non-simulatable instance of $meminit!");
+		$finish;
+	end
+end
+
+endmodule
+
+// --------------------------------------------------------
+
+module \$meminit_v2 (ADDR, DATA, EN);
+
+parameter MEMID = "";
+parameter ABITS = 8;
+parameter WIDTH = 8;
+parameter WORDS = 1;
+
+parameter PRIORITY = 0;
+
+input [ABITS-1:0] ADDR;
+input [WORDS*WIDTH-1:0] DATA;
+input [WIDTH-1:0] EN;
+
+initial begin
+	if (MEMID != "") begin
+		$display("ERROR: Found non-simulatable instance of $meminit_v2!");
 		$finish;
 	end
 end
@@ -2320,6 +2622,199 @@ end
 
 endmodule
 
+module \$mem_v2 (RD_CLK, RD_EN, RD_ARST, RD_SRST, RD_ADDR, RD_DATA, WR_CLK, WR_EN, WR_ADDR, WR_DATA);
+
+parameter MEMID = "";
+parameter signed SIZE = 4;
+parameter signed OFFSET = 0;
+parameter signed ABITS = 2;
+parameter signed WIDTH = 8;
+parameter signed INIT = 1'bx;
+
+parameter signed RD_PORTS = 1;
+parameter RD_CLK_ENABLE = 1'b1;
+parameter RD_CLK_POLARITY = 1'b1;
+parameter RD_TRANSPARENCY_MASK = 1'b0;
+parameter RD_COLLISION_X_MASK = 1'b0;
+parameter RD_WIDE_CONTINUATION = 1'b0;
+parameter RD_CE_OVER_SRST = 1'b0;
+parameter RD_ARST_VALUE = 1'b0;
+parameter RD_SRST_VALUE = 1'b0;
+parameter RD_INIT_VALUE = 1'b0;
+
+parameter signed WR_PORTS = 1;
+parameter WR_CLK_ENABLE = 1'b1;
+parameter WR_CLK_POLARITY = 1'b1;
+parameter WR_PRIORITY_MASK = 1'b0;
+parameter WR_WIDE_CONTINUATION = 1'b0;
+
+input [RD_PORTS-1:0] RD_CLK;
+input [RD_PORTS-1:0] RD_EN;
+input [RD_PORTS-1:0] RD_ARST;
+input [RD_PORTS-1:0] RD_SRST;
+input [RD_PORTS*ABITS-1:0] RD_ADDR;
+output reg [RD_PORTS*WIDTH-1:0] RD_DATA;
+
+input [WR_PORTS-1:0] WR_CLK;
+input [WR_PORTS*WIDTH-1:0] WR_EN;
+input [WR_PORTS*ABITS-1:0] WR_ADDR;
+input [WR_PORTS*WIDTH-1:0] WR_DATA;
+
+reg [WIDTH-1:0] memory [SIZE-1:0];
+
+integer i, j, k;
+reg [WR_PORTS-1:0] LAST_WR_CLK;
+reg [RD_PORTS-1:0] LAST_RD_CLK;
+
+function port_active;
+	input clk_enable;
+	input clk_polarity;
+	input last_clk;
+	input this_clk;
+	begin
+		casez ({clk_enable, clk_polarity, last_clk, this_clk})
+			4'b0???: port_active = 1;
+			4'b1101: port_active = 1;
+			4'b1010: port_active = 1;
+			default: port_active = 0;
+		endcase
+	end
+endfunction
+
+initial begin
+	for (i = 0; i < SIZE; i = i+1)
+		memory[i] = INIT >>> (i*WIDTH);
+	RD_DATA = RD_INIT_VALUE;
+end
+
+always @(RD_CLK, RD_ARST, RD_ADDR, RD_DATA, WR_CLK, WR_EN, WR_ADDR, WR_DATA) begin
+`ifdef SIMLIB_MEMDELAY
+	#`SIMLIB_MEMDELAY;
+`endif
+	for (i = 0; i < RD_PORTS; i = i+1) begin
+		if (RD_CLK_ENABLE[i] && RD_EN[i] && port_active(RD_CLK_ENABLE[i], RD_CLK_POLARITY[i], LAST_RD_CLK[i], RD_CLK[i])) begin
+			// $display("Read from %s: addr=%b data=%b", MEMID, RD_ADDR[i*ABITS +: ABITS],  memory[RD_ADDR[i*ABITS +: ABITS] - OFFSET]);
+			RD_DATA[i*WIDTH +: WIDTH] <= memory[RD_ADDR[i*ABITS +: ABITS] - OFFSET];
+
+			for (j = 0; j < WR_PORTS; j = j+1) begin
+				if (RD_TRANSPARENCY_MASK[i*WR_PORTS + j] && port_active(WR_CLK_ENABLE[j], WR_CLK_POLARITY[j], LAST_WR_CLK[j], WR_CLK[j]) && RD_ADDR[i*ABITS +: ABITS] == WR_ADDR[j*ABITS +: ABITS])
+					for (k = 0; k < WIDTH; k = k+1)
+						if (WR_EN[j*WIDTH+k])
+							RD_DATA[i*WIDTH+k] <= WR_DATA[j*WIDTH+k];
+				if (RD_COLLISION_X_MASK[i*WR_PORTS + j] && port_active(WR_CLK_ENABLE[j], WR_CLK_POLARITY[j], LAST_WR_CLK[j], WR_CLK[j]) && RD_ADDR[i*ABITS +: ABITS] == WR_ADDR[j*ABITS +: ABITS])
+					for (k = 0; k < WIDTH; k = k+1)
+						if (WR_EN[j*WIDTH+k])
+							RD_DATA[i*WIDTH+k] <= 1'bx;
+			end
+		end
+	end
+
+	for (i = 0; i < WR_PORTS; i = i+1) begin
+		if (port_active(WR_CLK_ENABLE[i], WR_CLK_POLARITY[i], LAST_WR_CLK[i], WR_CLK[i]))
+			for (j = 0; j < WIDTH; j = j+1)
+				if (WR_EN[i*WIDTH+j]) begin
+					// $display("Write to %s: addr=%b data=%b", MEMID, WR_ADDR[i*ABITS +: ABITS], WR_DATA[i*WIDTH+j]);
+					memory[WR_ADDR[i*ABITS +: ABITS] - OFFSET][j] = WR_DATA[i*WIDTH+j];
+				end
+	end
+
+	for (i = 0; i < RD_PORTS; i = i+1) begin
+		if (!RD_CLK_ENABLE[i]) begin
+			// $display("Combinatorial read from %s: addr=%b data=%b", MEMID, RD_ADDR[i*ABITS +: ABITS],  memory[RD_ADDR[i*ABITS +: ABITS] - OFFSET]);
+			RD_DATA[i*WIDTH +: WIDTH] <= memory[RD_ADDR[i*ABITS +: ABITS] - OFFSET];
+		end
+	end
+
+	for (i = 0; i < RD_PORTS; i = i+1) begin
+		if (RD_SRST[i] && port_active(RD_CLK_ENABLE[i], RD_CLK_POLARITY[i], LAST_RD_CLK[i], RD_CLK[i]) && (RD_EN[i] || !RD_CE_OVER_SRST[i]))
+			RD_DATA[i*WIDTH +: WIDTH] <= RD_SRST_VALUE[i*WIDTH +: WIDTH];
+		if (RD_ARST[i])
+			RD_DATA[i*WIDTH +: WIDTH] <= RD_ARST_VALUE[i*WIDTH +: WIDTH];
+	end
+
+	LAST_RD_CLK <= RD_CLK;
+	LAST_WR_CLK <= WR_CLK;
+end
+
+endmodule
+
 `endif
 
 // --------------------------------------------------------
+
+module \$set_tag (A, SET, CLR, Y);
+
+parameter TAG = "";
+parameter WIDTH = 0;
+
+input [WIDTH-1:0] A;
+input [WIDTH-1:0] SET;
+input [WIDTH-1:0] CLR;
+output [WIDTH-1:0] Y;
+
+assign Y = A;
+
+endmodule
+
+// --------------------------------------------------------
+
+module \$get_tag (A, Y);
+
+parameter TAG = "";
+parameter WIDTH = 0;
+
+input [WIDTH-1:0] A;
+output [WIDTH-1:0] Y;
+
+assign Y = A;
+
+endmodule
+
+// --------------------------------------------------------
+
+module \$overwrite_tag (A, SET, CLR);
+
+parameter TAG = "";
+parameter WIDTH = 0;
+
+input [WIDTH-1:0] A;
+input [WIDTH-1:0] SET;
+input [WIDTH-1:0] CLR;
+
+endmodule
+
+// --------------------------------------------------------
+
+module \$original_tag (A, Y);
+
+parameter TAG = "";
+parameter WIDTH = 0;
+
+input [WIDTH-1:0] A;
+output [WIDTH-1:0] Y;
+
+assign Y = A;
+
+endmodule
+
+// --------------------------------------------------------
+
+module \$future_ff (A, Y);
+
+parameter WIDTH = 0;
+
+input [WIDTH-1:0] A;
+output [WIDTH-1:0] Y;
+
+assign Y = A;
+
+endmodule
+
+// --------------------------------------------------------
+
+(* noblackbox *)
+module \$scopeinfo ();
+
+parameter TYPE = "";
+
+endmodule

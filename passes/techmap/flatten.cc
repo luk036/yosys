@@ -1,7 +1,7 @@
 /*
  *  yosys -- Yosys Open SYnthesis Suite
  *
- *  Copyright (C) 2012  Clifford Wolf <clifford@clifford.at>
+ *  Copyright (C) 2012  Claire Xenia Wolf <claire@yosyshq.com>
  *
  *  Permission to use, copy, modify, and/or distribute this software for any
  *  purpose with or without fee is hereby granted, provided that the above
@@ -46,24 +46,6 @@ IdString map_name(RTLIL::Cell *cell, T *object)
 	return cell->module->uniquify(concat_name(cell, object->name));
 }
 
-template<class T>
-void map_attributes(RTLIL::Cell *cell, T *object, IdString orig_object_name)
-{
-	if (object->has_attribute(ID::src))
-		object->add_strpool_attribute(ID::src, cell->get_strpool_attribute(ID::src));
-
-	// Preserve original names via the hdlname attribute, but only for objects with a fully public name.
-	if (cell->name[0] == '\\' && (object->has_attribute(ID::hdlname) || orig_object_name[0] == '\\')) {
-		std::vector<std::string> hierarchy;
-		if (object->has_attribute(ID::hdlname))
-			hierarchy = object->get_hdlname_attribute();
-		else
-			hierarchy.push_back(orig_object_name.str().substr(1));
-		hierarchy.insert(hierarchy.begin(), cell->name.str().substr(1));
-		object->set_hdlname_attribute(hierarchy);
-	}
-}
-
 void map_sigspec(const dict<RTLIL::Wire*, RTLIL::Wire*> &map, RTLIL::SigSpec &sig, RTLIL::Module *into = nullptr)
 {
 	vector<SigChunk> chunks = sig;
@@ -76,8 +58,56 @@ void map_sigspec(const dict<RTLIL::Wire*, RTLIL::Wire*> &map, RTLIL::SigSpec &si
 struct FlattenWorker
 {
 	bool ignore_wb = false;
+	bool create_scopeinfo = true;
+	bool create_scopename = false;
 
-	void flatten_cell(RTLIL::Design *design, RTLIL::Module *module, RTLIL::Cell *cell, RTLIL::Module *tpl, std::vector<RTLIL::Cell*> &new_cells)
+	template<class T>
+	void map_attributes(RTLIL::Cell *cell, T *object, IdString orig_object_name)
+	{
+		if (!create_scopeinfo && object->has_attribute(ID::src))
+			object->add_strpool_attribute(ID::src, cell->get_strpool_attribute(ID::src));
+
+		// Preserve original names via the hdlname attribute, but only for objects with a fully public name.
+		// If the '-scopename' option is used, also preserve the containing scope of private objects if their scope is fully public.
+		if (cell->name[0] == '\\') {
+			if (object->has_attribute(ID::hdlname) || orig_object_name[0] == '\\') {
+				std::string new_hdlname;
+
+				if (cell->has_attribute(ID::hdlname)) {
+					new_hdlname = cell->get_string_attribute(ID(hdlname));
+				} else {
+					log_assert(!cell->name.empty());
+					new_hdlname = cell->name.c_str() + 1;
+				}
+				new_hdlname += ' ';
+
+				if (object->has_attribute(ID::hdlname)) {
+					new_hdlname += object->get_string_attribute(ID(hdlname));
+				} else {
+					log_assert(!orig_object_name.empty());
+					new_hdlname += orig_object_name.c_str() + 1;
+				}
+				object->set_string_attribute(ID(hdlname), new_hdlname);
+			} else if (object->has_attribute(ID(scopename))) {
+				std::string new_scopename;
+
+				if (cell->has_attribute(ID::hdlname)) {
+					new_scopename = cell->get_string_attribute(ID(hdlname));
+				} else {
+					log_assert(!cell->name.empty());
+					new_scopename = cell->name.c_str() + 1;
+				}
+				new_scopename += ' ';
+				new_scopename += object->get_string_attribute(ID(scopename));
+				object->set_string_attribute(ID(scopename), new_scopename);
+			} else if (create_scopename) {
+				log_assert(!cell->name.empty());
+				object->set_string_attribute(ID(scopename), cell->name.c_str() + 1);
+			}
+		}
+	}
+
+	void flatten_cell(RTLIL::Design *design, RTLIL::Module *module, RTLIL::Cell *cell, RTLIL::Module *tpl, SigMap &sigmap, std::vector<RTLIL::Cell*> &new_cells)
 	{
 		// Copy the contents of the flattened cell
 
@@ -122,6 +152,9 @@ struct FlattenWorker
 		for (auto &tpl_proc_it : tpl->processes) {
 			RTLIL::Process *new_proc = module->addProcess(map_name(cell, tpl_proc_it.second), tpl_proc_it.second);
 			map_attributes(cell, new_proc, tpl_proc_it.second->name);
+			for (auto new_proc_sync : new_proc->syncs)
+				for (auto &memwr_action : new_proc_sync->mem_write_actions)
+					memwr_action.memid = memory_map.at(memwr_action.memid).str();
 			auto rewriter = [&](RTLIL::SigSpec &sig) { map_sigspec(wire_map, sig); };
 			new_proc->rewrite_sigspecs(rewriter);
 			design->select(module, new_proc);
@@ -130,10 +163,10 @@ struct FlattenWorker
 		for (auto tpl_cell : tpl->cells()) {
 			RTLIL::Cell *new_cell = module->addCell(map_name(cell, tpl_cell), tpl_cell);
 			map_attributes(cell, new_cell, tpl_cell->name);
-			if (new_cell->type.in(ID($memrd), ID($memwr), ID($meminit))) {
+			if (new_cell->has_memid()) {
 				IdString memid = new_cell->getParam(ID::MEMID).decode_string();
 				new_cell->setParam(ID::MEMID, Const(memory_map.at(memid).str()));
-			} else if (new_cell->type == ID($mem)) {
+			} else if (new_cell->is_mem_cell()) {
 				IdString memid = new_cell->getParam(ID::MEMID).decode_string();
 				new_cell->setParam(ID::MEMID, Const(concat_name(cell, memid).str()));
 			}
@@ -152,18 +185,16 @@ struct FlattenWorker
 
 		// Attach port connections of the flattened cell
 
-		SigMap tpl_sigmap(tpl);
 		pool<SigBit> tpl_driven;
 		for (auto tpl_cell : tpl->cells())
 			for (auto &tpl_conn : tpl_cell->connections())
 				if (tpl_cell->output(tpl_conn.first))
-					for (auto bit : tpl_sigmap(tpl_conn.second))
+					for (auto bit : tpl_conn.second)
 						tpl_driven.insert(bit);
 		for (auto &tpl_conn : tpl->connections())
-			for (auto bit : tpl_sigmap(tpl_conn.first))
+			for (auto bit : tpl_conn.first)
 				tpl_driven.insert(bit);
 
-		SigMap sigmap(module);
 		for (auto &port_it : cell->connections())
 		{
 			IdString port_name = port_it.first;
@@ -181,16 +212,19 @@ struct FlattenWorker
 
 			RTLIL::Wire *tpl_wire = tpl->wire(port_name);
 			RTLIL::SigSig new_conn;
+			bool is_signed = false;
 			if (tpl_wire->port_output && !tpl_wire->port_input) {
 				new_conn.first = port_it.second;
 				new_conn.second = tpl_wire;
+				is_signed = tpl_wire->is_signed;
 			} else if (!tpl_wire->port_output && tpl_wire->port_input) {
 				new_conn.first = tpl_wire;
 				new_conn.second = port_it.second;
+				is_signed = new_conn.second.is_wire() && new_conn.second.as_wire()->is_signed;
 			} else {
 				SigSpec sig_tpl = tpl_wire, sig_mod = port_it.second;
 				for (int i = 0; i < GetSize(sig_tpl) && i < GetSize(sig_mod); i++) {
-					if (tpl_driven.count(tpl_sigmap(sig_tpl[i]))) {
+					if (tpl_driven.count(sig_tpl[i])) {
 						new_conn.first.append(sig_mod[i]);
 						new_conn.second.append(sig_tpl[i]);
 					} else {
@@ -205,17 +239,44 @@ struct FlattenWorker
 			if (new_conn.second.size() > new_conn.first.size())
 				new_conn.second.remove(new_conn.first.size(), new_conn.second.size() - new_conn.first.size());
 			if (new_conn.second.size() < new_conn.first.size())
-				new_conn.second.append(RTLIL::SigSpec(RTLIL::State::S0, new_conn.first.size() - new_conn.second.size()));
+				new_conn.second.extend_u0(new_conn.first.size(), is_signed);
 			log_assert(new_conn.first.size() == new_conn.second.size());
 
 			if (sigmap(new_conn.first).has_const())
-				log_error("Mismatch in directionality for cell port %s.%s.%s: %s <= %s\n",
+				log_error("Cell port %s.%s.%s is driving constant bits: %s <= %s\n",
 					log_id(module), log_id(cell), log_id(port_it.first), log_signal(new_conn.first), log_signal(new_conn.second));
 
 			module->connect(new_conn);
+			sigmap.add(new_conn.first, new_conn.second);
+		}
+
+		RTLIL::Cell *scopeinfo = nullptr;
+		RTLIL::IdString cell_name = cell->name;
+
+		if (create_scopeinfo && cell_name.isPublic())
+		{
+			// The $scopeinfo's name will be changed below after removing the flattened cell
+			scopeinfo = module->addCell(NEW_ID, ID($scopeinfo));
+			scopeinfo->setParam(ID::TYPE, RTLIL::Const("module"));
+
+			for (auto const &attr : cell->attributes)
+			{
+				if (attr.first == ID::hdlname)
+					scopeinfo->attributes.insert(attr);
+				else
+					scopeinfo->attributes.emplace(stringf("\\cell_%s", RTLIL::unescape_id(attr.first).c_str()), attr.second);
+			}
+
+			for (auto const &attr : tpl->attributes)
+				scopeinfo->attributes.emplace(stringf("\\module_%s", RTLIL::unescape_id(attr.first).c_str()), attr.second);
+
+			scopeinfo->attributes.emplace(ID(module), RTLIL::unescape_id(tpl->name));
 		}
 
 		module->remove(cell);
+
+		if (scopeinfo != nullptr)
+			module->rename(scopeinfo, cell_name);
 	}
 
 	void flatten_module(RTLIL::Design *design, RTLIL::Module *module, pool<RTLIL::Module*> &used_modules)
@@ -223,6 +284,7 @@ struct FlattenWorker
 		if (!design->selected(module) || module->get_blackbox_attribute(ignore_wb))
 			return;
 
+		SigMap sigmap(module);
 		std::vector<RTLIL::Cell*> worklist = module->selected_cells();
 		while (!worklist.empty())
 		{
@@ -246,7 +308,7 @@ struct FlattenWorker
 			// If a design is fully selected and has a top module defined, topological sorting ensures that all cells
 			// added during flattening are black boxes, and flattening is finished in one pass. However, when flattening
 			// individual modules, this isn't the case, and the newly added cells might have to be flattened further.
-			flatten_cell(design, module, cell, tpl, worklist);
+			flatten_cell(design, module, cell, tpl, sigmap, worklist);
 		}
 	}
 };
@@ -269,6 +331,20 @@ struct FlattenPass : public Pass {
 		log("    -wb\n");
 		log("        Ignore the 'whitebox' attribute on cell implementations.\n");
 		log("\n");
+		log("    -noscopeinfo\n");
+		log("        Do not create '$scopeinfo' cells that preserve attributes of cells and\n");
+		log("        modules that were removed during flattening. With this option, the\n");
+		log("        'src' attribute of a given cell is merged into all objects replacing\n");
+		log("        that cell, with multiple distinct 'src' locations separated by '|'.\n");
+		log("        Without this option these 'src' locations can be found via the\n");
+		log("        cell_src' and 'module_src' attribute of '$scopeinfo' cells.\n");
+		log("\n");
+		log("    -scopename\n");
+		log("        Create 'scopename' attributes for objects with a private name. This\n");
+		log("        attribute records the 'hdlname' of the enclosing scope. For objects\n");
+		log("        with a public name the enclosing scope can be found via their\n");
+		log("        'hdlname' attribute.\n");
+		log("\n");
 	}
 	void execute(std::vector<std::string> args, RTLIL::Design *design) override
 	{
@@ -281,6 +357,14 @@ struct FlattenPass : public Pass {
 		for (argidx = 1; argidx < args.size(); argidx++) {
 			if (args[argidx] == "-wb") {
 				worker.ignore_wb = true;
+				continue;
+			}
+			if (args[argidx] == "-noscopeinfo") {
+				worker.create_scopeinfo = false;
+				continue;
+			}
+			if (args[argidx] == "-scopename") {
+				worker.create_scopename = true;
 				continue;
 			}
 			break;
@@ -306,7 +390,7 @@ struct FlattenPass : public Pass {
 			for (auto cell : module->selected_cells()) {
 				RTLIL::Module *tpl = design->module(cell->type);
 				if (tpl != nullptr) {
-					if (topo_modules.database.count(tpl) == 0)
+                                        if (!topo_modules.has_node(tpl))
 						worklist.insert(tpl);
 					topo_modules.edge(tpl, module);
 				}

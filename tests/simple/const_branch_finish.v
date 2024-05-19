@@ -4,7 +4,7 @@
 		$finish; \
 	end
 
-module top;
+module case_branch_finish_top;
 	parameter WIDTH = 32;
 	integer j;
 	initial begin
@@ -21,9 +21,6 @@ module top;
 		end
 	end
 	generate
-		begin : unconditional_block
-			initial `CONSTANT_CHECK
-		end
 		if (WIDTH == 32) begin : conditional_block
 			initial `CONSTANT_CHECK
 		end

@@ -1,7 +1,7 @@
 /*
  *  yosys -- Yosys Open SYnthesis Suite
  *
- *  Copyright (C) 2012  Clifford Wolf <clifford@clifford.at>
+ *  Copyright (C) 2012  Claire Xenia Wolf <claire@yosyshq.com>
  *            (C) 2019  Eddie Hung    <eddie@fpgeh.com>
  *
  *  Permission to use, copy, modify, and/or distribute this software for any
@@ -74,11 +74,17 @@ struct Abc9Pass : public ScriptPass
 			/* Comm3 */ "&synch2 -K 6 -C 500; &if -m "/*"-E 5"*/" {C} {W} {D} {R} -v; &mfs "/*"-W 4 -M 500 -C 7000"*/"; &save;"\
 			/* Comm2 */ "&dch -C 500; &if -m {C} {W} {D} {R} -v; &mfs "/*"-W 4 -M 500 -C 7000"*/"; &save; "\
 			"&load";
-		// Based on ABC's &flow3
+		// Based on ABC's &flow3 -m
 		RTLIL::constpad["abc9.script.flow3"] = "+&scorr; &sweep;" \
 			"&if {C} {W} {D}; &save; &st; &syn2; &if {C} {W} {D} {R} -v; &save; &load;"\
 			"&st; &if {C} -g -K 6; &dch -f; &if {C} {W} {D} {R} -v; &save; &load;"\
 			"&st; &if {C} -g -K 6; &synch2; &if {C} {W} {D} {R} -v; &save; &load;"\
+			"&mfs";
+		// As above, but with &mfs calls as in the original &flow3
+		RTLIL::constpad["abc9.script.flow3mfs"] = "+&scorr; &sweep;" \
+			"&if {C} {W} {D}; &save; &st; &syn2; &if {C} {W} {D} {R} -v; &save; &load;"\
+			"&st; &if {C} -g -K 6; &dch -f; &if {C} {W} {D} {R} -v; &mfs; &save; &load;"\
+			"&st; &if {C} -g -K 6; &synch2; &if {C} {W} {D} {R} -v; &mfs; &save; &load;"\
 			"&mfs";
 	}
 	void help() override
@@ -87,8 +93,8 @@ struct Abc9Pass : public ScriptPass
 		log("\n");
 		log("    abc9 [options] [selection]\n");
 		log("\n");
-		log("This script pass performs a sequence of commands to facilitate the use of the ABC\n");
-		log("tool [1] for technology mapping of the current design to a target FPGA\n");
+		log("This script pass performs a sequence of commands to facilitate the use of the\n");
+		log("ABC tool [1] for technology mapping of the current design to a target FPGA\n");
 		log("architecture. Only fully-selected modules are supported.\n");
 		log("\n");
 		log("    -run <from_label>:<to_label>\n");
@@ -283,9 +289,16 @@ struct Abc9Pass : public ScriptPass
 
 		if (check_label("map")) {
 			if (help_mode)
-				run("abc9_ops -prep_hier -prep_bypass [-prep_dff -dff]", "(option if -dff)");
+				run("abc9_ops -prep_hier [-dff]", "(option if -dff)");
 			else
-				run(stringf("abc9_ops -prep_hier -prep_bypass %s", dff_mode ? "-prep_dff -dff" : ""));
+				run(stringf("abc9_ops -prep_hier %s", dff_mode ? "-dff" : ""));
+			run("scc -specify -set_attr abc9_scc_id {}");
+			if (help_mode)
+				run("abc9_ops -prep_bypass [-prep_dff]", "(option if -dff)");
+			else {
+				active_design->scratchpad_unset("abc9_ops.prep_bypass.did_something");
+				run(stringf("abc9_ops -prep_bypass %s", dff_mode ? "-prep_dff" : ""));
+			}
 			if (dff_mode) {
 				run("design -copy-to $abc9_map @$abc9_flops", "(only if -dff)");
 				run("select -unset $abc9_flops", "             (only if -dff)");
@@ -330,20 +343,20 @@ struct Abc9Pass : public ScriptPass
 			run("design -stash $abc9_map");
 			run("design -load $abc9");
 			run("design -delete $abc9");
+			// Insert bypass modules (and perform +/abc9_map.v transformations), except for those cells part of a SCC
 			if (help_mode)
 				run("techmap -wb -max_iter 1 -map %$abc9_map -map +/abc9_map.v [-D DFF]", "(option if -dff)");
 			else
-				run(stringf("techmap -wb -max_iter 1 -map %%$abc9_map -map +/abc9_map.v %s", dff_mode ? "-D DFF" : ""));
+				run(stringf("techmap -wb -max_iter 1 -map %%$abc9_map -map +/abc9_map.v %s a:abc9_scc_id %%n", dff_mode ? "-D DFF" : ""));
 			run("design -delete $abc9_map");
 		}
 
 		if (check_label("pre")) {
 			run("read_verilog -icells -lib -specify +/abc9_model.v");
-			run("scc -set_attr abc9_scc_id {}");
 			if (help_mode)
-				run("abc9_ops -mark_scc -prep_delays -prep_xaiger [-dff]", "(option for -dff)");
+				run("abc9_ops -break_scc -prep_delays -prep_xaiger [-dff]", "(option for -dff)");
 			else
-				run("abc9_ops -mark_scc -prep_delays -prep_xaiger" + std::string(dff_mode ? " -dff" : ""));
+				run("abc9_ops -break_scc -prep_delays -prep_xaiger" + std::string(dff_mode ? " -dff" : ""));
 			if (help_mode)
 				run("abc9_ops -prep_lut <maxlut>", "(skip if -lut or -luts)");
 			else if (!lut_mode)
@@ -391,9 +404,12 @@ struct Abc9Pass : public ScriptPass
 					if (!active_design->selected_whole_module(mod))
 						log_error("Can't handle partially selected module %s!\n", log_id(mod));
 
-					std::string tempdir_name = "/tmp/" + proc_program_prefix() + "yosys-abc-XXXXXX";
-					if (!cleanup)
-						tempdir_name[0] = tempdir_name[4] = '_';
+					std::string tempdir_name;
+					if (cleanup) 
+						tempdir_name = get_base_tmpdir() + "/";
+					else
+						tempdir_name = "_tmp_";
+					tempdir_name += proc_program_prefix() + "yosys-abc-XXXXXX";
 					tempdir_name = make_temp_dir(tempdir_name);
 
 					if (!lut_mode)
@@ -445,6 +461,9 @@ struct Abc9Pass : public ScriptPass
 			run("design -delete $abc9_unmap");
 			if (saved_designs.count("$abc9_holes") || help_mode)
 				run("design -delete $abc9_holes");
+			if (help_mode || active_design->scratchpad_get_bool("abc9_ops.prep_bypass.did_something"))
+				run("delete =*_$abc9_byp");
+			run("setattr -mod -unset abc9_box_id");
 		}
 	}
 } Abc9Pass;

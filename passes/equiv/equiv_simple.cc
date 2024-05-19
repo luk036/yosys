@@ -1,7 +1,7 @@
 /*
  *  yosys -- Yosys Open SYnthesis Suite
  *
- *  Copyright (C) 2012  Clifford Wolf <clifford@clifford.at>
+ *  Copyright (C) 2012  Claire Xenia Wolf <claire@yosyshq.com>
  *
  *  Permission to use, copy, modify, and/or distribute this software for any
  *  purpose with or without fee is hereby granted, provided that the above
@@ -60,7 +60,7 @@ struct EquivSimpleWorker
 		for (auto &conn : cell->connections())
 			if (yosys_celltypes.cell_input(cell->type, conn.first))
 				for (auto bit : sigmap(conn.second)) {
-					if (cell->type.in(ID($dff), ID($_DFF_P_), ID($_DFF_N_), ID($ff), ID($_FF_))) {
+					if (RTLIL::builtin_ff_cell_types().count(cell->type)) {
 						if (!conn.first.in(ID::CLK, ID::C))
 							next_seed.insert(bit);
 					} else
@@ -133,11 +133,9 @@ struct EquivSimpleWorker
 
 			for (auto bit_a : seed_a)
 				find_input_cone(next_seed_a, full_cells_cone_a, full_bits_cone_a, no_stop_cells, no_stop_bits, nullptr, bit_a);
-			next_seed_a.clear();
 
 			for (auto bit_b : seed_b)
 				find_input_cone(next_seed_b, full_cells_cone_b, full_bits_cone_b, no_stop_cells, no_stop_bits, nullptr, bit_b);
-			next_seed_b.clear();
 
 			pool<Cell*> short_cells_cone_a, short_cells_cone_b;
 			pool<SigBit> short_bits_cone_a, short_bits_cone_b;
@@ -145,10 +143,12 @@ struct EquivSimpleWorker
 
 			if (short_cones)
 			{
+				next_seed_a.clear();
 				for (auto bit_a : seed_a)
 					find_input_cone(next_seed_a, short_cells_cone_a, short_bits_cone_a, full_cells_cone_b, full_bits_cone_b, &input_bits, bit_a);
 				next_seed_a.swap(seed_a);
 
+				next_seed_b.clear();
 				for (auto bit_b : seed_b)
 					find_input_cone(next_seed_b, short_cells_cone_b, short_bits_cone_b, full_cells_cone_a, full_bits_cone_a, &input_bits, bit_b);
 				next_seed_b.swap(seed_b);
@@ -184,8 +184,12 @@ struct EquivSimpleWorker
 
 			for (auto cell : problem_cells) {
 				auto key = pair<Cell*, int>(cell, step+1);
-				if (!imported_cells_cache.count(key) && !satgen.importCell(cell, step+1))
-					log_cmd_error("No SAT model available for cell %s (%s).\n", log_id(cell), log_id(cell->type));
+				if (!imported_cells_cache.count(key) && !satgen.importCell(cell, step+1)) {
+					if (RTLIL::builtin_ff_cell_types().count(cell->type))
+						log_cmd_error("No SAT model available for async FF cell %s (%s).  Consider running `async2sync` or `clk2fflogic` first.\n", log_id(cell), log_id(cell->type));
+					else
+						log_cmd_error("No SAT model available for cell %s (%s).\n", log_id(cell), log_id(cell->type));
+				}
 				imported_cells_cache.insert(key);
 			}
 
@@ -335,6 +339,8 @@ struct EquivSimplePass : public Pass {
 		CellTypes ct;
 		ct.setup_internals();
 		ct.setup_stdcells();
+		ct.setup_internals_ff();
+		ct.setup_stdcells_mem();
 
 		for (auto module : design->selected_modules())
 		{
@@ -360,7 +366,7 @@ struct EquivSimplePass : public Pass {
 					unproven_cells_counter, GetSize(unproven_equiv_cells), log_id(module));
 
 			for (auto cell : module->cells()) {
-				if (!ct.cell_known(cell->type) && !cell->type.in(ID($dff), ID($_DFF_P_), ID($_DFF_N_), ID($ff), ID($_FF_)))
+				if (!ct.cell_known(cell->type))
 					continue;
 				for (auto &conn : cell->connections())
 					if (yosys_celltypes.cell_output(cell->type, conn.first))

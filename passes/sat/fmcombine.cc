@@ -1,7 +1,7 @@
 /*
  *  yosys -- Yosys Open SYnthesis Suite
  *
- *  Copyright (C) 2012  Clifford Wolf <clifford@clifford.at>
+ *  Copyright (C) 2012  Claire Xenia Wolf <claire@yosyshq.com>
  *
  *  Permission to use, copy, modify, and/or distribute this software for any
  *  purpose with or without fee is hereby granted, provided that the above
@@ -63,6 +63,9 @@ struct FmcombineWorker
 		Cell *c = module->addCell(cell->name.str() + suffix, cell->type);
 		c->parameters = cell->parameters;
 		c->attributes = cell->attributes;
+
+		if (cell->is_mem_cell())
+			c->parameters[ID::MEMID] = cell->parameters[ID::MEMID].decode_string() + suffix;
 
 		for (auto &conn : cell->connections())
 			c->setPort(conn.first, import_sig(conn.second, suffix));

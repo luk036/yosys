@@ -1,7 +1,7 @@
 /*
  *  yosys -- Yosys Open SYnthesis Suite
  *
- *  Copyright (C) 2012  Clifford Wolf <clifford@clifford.at>
+ *  Copyright (C) 2012  Claire Xenia Wolf <claire@yosyshq.com>
  *
  *  Permission to use, copy, modify, and/or distribute this software for any
  *  purpose with or without fee is hereby granted, provided that the above
@@ -289,7 +289,7 @@ struct Ice40DspPass : public Pass {
 		log("\n");
 		log("Pack input registers (A, B, {C,D}; with optional hold), pipeline registers\n");
 		log("({F,J,K,G}, H), output registers (O -- full 32-bits or lower 16-bits only; with\n");
-		log("optional hold), and post-adder into into the SB_MAC16 resource.\n");
+		log("optional hold), and post-adder into the SB_MAC16 resource.\n");
 		log("\n");
 		log("Multiply-accumulate operations using the post-adder with feedback on the {C,D}\n");
 		log("input will be folded into the DSP. In this scenario only, resetting the\n");

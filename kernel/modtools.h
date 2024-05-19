@@ -1,7 +1,7 @@
 /* -*- c++ -*-
  *  yosys -- Yosys Open SYnthesis Suite
  *
- *  Copyright (C) 2012  Clifford Wolf <clifford@clifford.at>
+ *  Copyright (C) 2012  Claire Xenia Wolf <claire@yosyshq.com>
  *
  *  Permission to use, copy, modify, and/or distribute this software for any
  *  purpose with or without fee is hereby granted, provided that the above
@@ -380,9 +380,11 @@ struct ModWalker
 		}
 	}
 
-	ModWalker(RTLIL::Design *design) : design(design), module(NULL)
+	ModWalker(RTLIL::Design *design, RTLIL::Module *module = nullptr) : design(design), module(NULL)
 	{
-            ct.setup(design);
+		ct.setup(design);
+		if (module)
+			setup(module);
 	}
 
 	void setup(RTLIL::Module *module, CellTypes *filter_ct = NULL)
@@ -395,6 +397,8 @@ struct ModWalker
 		signal_consumers.clear();
 		signal_inputs.clear();
 		signal_outputs.clear();
+		cell_inputs.clear();
+		cell_outputs.clear();
 
 		for (auto &it : module->wires_)
 			add_wire(it.second);
@@ -405,7 +409,6 @@ struct ModWalker
 
 	// get_* methods -- single RTLIL::SigBit
 
-	template<typename T>
 	inline bool get_drivers(pool<PortBit> &result, RTLIL::SigBit bit) const
 	{
 		bool found = false;
@@ -417,7 +420,6 @@ struct ModWalker
 		return found;
 	}
 
-	template<typename T>
 	inline bool get_consumers(pool<PortBit> &result, RTLIL::SigBit bit) const
 	{
 		bool found = false;
@@ -429,7 +431,6 @@ struct ModWalker
 		return found;
 	}
 
-	template<typename T>
 	inline bool get_inputs(pool<RTLIL::SigBit> &result, RTLIL::SigBit bit) const
 	{
 		bool found = false;
@@ -438,7 +439,6 @@ struct ModWalker
 		return found;
 	}
 
-	template<typename T>
 	inline bool get_outputs(pool<RTLIL::SigBit> &result, RTLIL::SigBit bit) const
 	{
 		bool found = false;

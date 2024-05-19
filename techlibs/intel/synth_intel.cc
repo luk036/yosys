@@ -1,7 +1,7 @@
 /*
  *  yosys -- Yosys Open SYnthesis Suite
  *
- *  Copyright (C) 2012  Clifford Wolf <clifford@clifford.at>
+ *  Copyright (C) 2012  Claire Xenia Wolf <claire@yosyshq.com>
  *
  *  Permission to use, copy, modify, and/or distribute this software for any
  *  purpose with or without fee is hereby granted, provided that the above
@@ -39,21 +39,22 @@ struct SynthIntelPass : public ScriptPass {
 		log("    -family <max10 | cyclone10lp | cycloneiv | cycloneive>\n");
 		log("        generate the synthesis netlist for the specified family.\n");
 		log("        MAX10 is the default target if no family argument specified.\n");
-		log("        For Cyclone IV GX devices, use cycloneiv argument; for Cyclone IV E, use cycloneive.\n");
-		log("        For Cyclone V and Cyclone 10 GX, use the synth_intel_alm backend instead.\n");
+		log("        For Cyclone IV GX devices, use cycloneiv argument; for Cyclone IV E, use\n");
+		log("        cycloneive. For Cyclone V and Cyclone 10 GX, use the synth_intel_alm\n");
+		log("        backend instead.\n");
 		log("\n");
 		log("    -top <module>\n");
 		log("        use the specified module as top module (default='top')\n");
 		log("\n");
 		log("    -vqm <file>\n");
-		log("        write the design to the specified Verilog Quartus Mapping File. Writing of an\n");
-		log("        output file is omitted if this parameter is not specified.\n");
+		log("        write the design to the specified Verilog Quartus Mapping File. Writing\n");
+		log("        of an output file is omitted if this parameter is not specified.\n");
 		log("        Note that this backend has not been tested and is likely incompatible\n");
 		log("        with recent versions of Quartus.\n");
 		log("\n");
 		log("    -vpr <file>\n");
-		log("        write BLIF files for VPR flow experiments. The synthesized BLIF output file is not\n");
-		log("        compatible with the Quartus flow. Writing of an\n");
+		log("        write BLIF files for VPR flow experiments. The synthesized BLIF output\n");
+		log("        file is not compatible with the Quartus flow. Writing of an\n");
 		log("        output file is omitted if this parameter is not specified.\n");
 		log("\n");
 		log("    -run <from_label>:<to_label>\n");
@@ -233,6 +234,7 @@ struct SynthIntelPass : public ScriptPass {
 			run("hierarchy -check");
 			run("stat");
 			run("check -noinit");
+			run("blackbox =A:whitebox");
 		}
 
 		if (check_label("vqm")) {

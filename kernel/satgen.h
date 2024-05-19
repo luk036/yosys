@@ -1,7 +1,7 @@
 /* -*- c++ -*-
  *  yosys -- Yosys Open SYnthesis Suite
  *
- *  Copyright (C) 2012  Clifford Wolf <clifford@clifford.at>
+ *  Copyright (C) 2012  Claire Xenia Wolf <claire@yosyshq.com>
  *
  *  Permission to use, copy, modify, and/or distribute this software for any
  *  purpose with or without fee is hereby granted, provided that the above
@@ -73,6 +73,7 @@ struct SatGen
 	std::map<std::pair<std::string, int>, bool> initstates;
 	bool ignore_div_by_zero;
 	bool model_undef;
+	bool def_formal = false;
 
 	SatGen(ezSAT *ez, SigMap *sigmap, std::string prefix = std::string()) :
 			ez(ez), sigmap(sigmap), prefix(prefix), ignore_div_by_zero(false), model_undef(false)

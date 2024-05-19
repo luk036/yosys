@@ -1,7 +1,7 @@
 /*
  *  yosys -- Yosys Open SYnthesis Suite
  *
- *  Copyright (C) 2012  Clifford Wolf <clifford@clifford.at>
+ *  Copyright (C) 2012  Claire Xenia Wolf <claire@yosyshq.com>
  *
  *  Permission to use, copy, modify, and/or distribute this software for any
  *  purpose with or without fee is hereby granted, provided that the above
@@ -1040,8 +1040,14 @@ struct VerificSvaImporter
 
 	[[noreturn]] void parser_error(Instance *inst)
 	{
-		parser_error(stringf("Verific SVA primitive %s (%s) is currently unsupported in this context",
-				inst->View()->Owner()->Name(), inst->Name()), inst->Linefile());
+		std::string msg;
+		if (inst->Type() == PRIM_SVA_MATCH_ITEM_TRIGGER || inst->Type() == PRIM_SVA_MATCH_ITEM_ASSIGN)
+		{
+			msg = "SVA sequences with local variable assignments are currently not supported.\n";
+		}
+
+		parser_error(stringf("%sVerific SVA primitive %s (%s) is currently unsupported in this context",
+				msg.c_str(), inst->View()->Owner()->Name(), inst->Name()), inst->Linefile());
 	}
 
 	dict<Net*, bool, hash_ptr_ops> check_expression_cache;
@@ -1516,10 +1522,13 @@ struct VerificSvaImporter
 		if (inst == nullptr)
 			return false;
 
-		if (clocking.cond_net != nullptr)
+		if (clocking.cond_net != nullptr) {
 			trig = importer->net_map_at(clocking.cond_net);
-		else
+			if (!clocking.cond_pol)
+				trig = module->Not(NEW_ID, trig);
+		} else {
 			trig = State::S1;
+		}
 
 		if (inst->Type() == PRIM_SVA_S_EVENTUALLY || inst->Type() == PRIM_SVA_EVENTUALLY)
 		{
@@ -1581,17 +1590,25 @@ struct VerificSvaImporter
 
 		SigBit trig = State::S1;
 
-		if (clocking.cond_net != nullptr)
+		if (clocking.cond_net != nullptr) {
 			trig = importer->net_map_at(clocking.cond_net);
+			if (!clocking.cond_pol)
+				trig = module->Not(NEW_ID, trig);
+		}
 
 		if (inst == nullptr)
 		{
-			log_assert(trig == State::S1);
-
-			if (accept_p != nullptr)
-				*accept_p = importer->net_map_at(net);
-			if (reject_p != nullptr)
-				*reject_p = module->Not(NEW_ID, importer->net_map_at(net));
+			if (trig != State::S1) {
+				if (accept_p != nullptr)
+					*accept_p = module->And(NEW_ID, trig, importer->net_map_at(net));
+				if (reject_p != nullptr)
+					*reject_p = module->And(NEW_ID, trig, module->Not(NEW_ID, importer->net_map_at(net)));
+			} else {
+				if (accept_p != nullptr)
+					*accept_p = importer->net_map_at(net);
+				if (reject_p != nullptr)
+					*reject_p = module->Not(NEW_ID, importer->net_map_at(net));
+			}
 		}
 		else
 		if (inst->Type() == PRIM_SVA_OVERLAPPED_IMPLICATION ||
@@ -1753,6 +1770,11 @@ struct VerificSvaImporter
 						clocking.addDff(NEW_ID, sig_en, sig_en_q, State::S0);
 					}
 
+					// accept in disable case
+
+					if (clocking.disable_sig != State::S0)
+						sig_a_q = module->Or(NEW_ID, sig_a_q, clocking.disable_sig);
+
 					// generate fair/live cell
 
 					RTLIL::Cell *c = nullptr;
@@ -1760,7 +1782,7 @@ struct VerificSvaImporter
 					if (mode_assert) c = module->addLive(root_name, sig_a_q, sig_en_q);
 					if (mode_assume) c = module->addFair(root_name, sig_a_q, sig_en_q);
 
-					importer->import_attributes(c->attributes, root);
+					if (c) importer->import_attributes(c->attributes, root);
 
 					return;
 				}
@@ -1805,7 +1827,7 @@ struct VerificSvaImporter
 				if (mode_assume) c = module->addAssume(root_name, sig_a_q, sig_en_q);
 				if (mode_cover) c = module->addCover(root_name, sig_a_q, sig_en_q);
 
-				importer->import_attributes(c->attributes, root);
+				if (c) importer->import_attributes(c->attributes, root);
 			}
 		}
 		catch (ParserErrorException)

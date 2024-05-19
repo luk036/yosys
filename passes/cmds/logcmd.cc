@@ -1,7 +1,7 @@
 /*
  *  yosys -- Yosys Open SYnthesis Suite
  *
- *  Copyright (C) 2012  Clifford Wolf <clifford@clifford.at>
+ *  Copyright (C) 2012  Claire Xenia Wolf <claire@yosyshq.com>
  *  Copyright (C) 2014  Johann Glaser <Johann.Glaser@gmx.at>
  *
  *  Permission to use, copy, modify, and/or distribute this software for any
@@ -38,8 +38,9 @@ struct LogPass : public Pass {
 		log("logfiles.\n");
 		log("\n");
 		log("    -stdout\n");
-		log("        Print the output to stdout too. This is useful when all Yosys is executed\n");
-		log("        with a script and the -q (quiet operation) argument to notify the user.\n");
+		log("        Print the output to stdout too. This is useful when all Yosys is\n");
+		log("        executed with a script and the -q (quiet operation) argument to notify\n");
+		log("        the user.\n");
 		log("\n");
 		log("    -stderr\n");
 		log("        Print the output to stderr too.\n");

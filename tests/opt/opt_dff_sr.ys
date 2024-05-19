@@ -24,6 +24,7 @@ design -save orig
 
 equiv_opt -undef -assert -multiclock opt_dff
 design -load postopt
+
 select -assert-count 1 t:$dffsr
 select -assert-count 1 t:$dffsr r:WIDTH=2 %i
 select -assert-count 1 t:$dffsre
@@ -36,6 +37,7 @@ design -load orig
 
 equiv_opt -undef -assert -multiclock opt_dff -keepdc
 design -load postopt
+
 select -assert-count 1 t:$dffsr
 select -assert-count 1 t:$dffsr r:WIDTH=4 %i
 select -assert-count 1 t:$dffsre
@@ -50,6 +52,7 @@ simplemap
 
 equiv_opt -undef -assert -multiclock opt_dff
 design -load postopt
+
 select -assert-count 1 t:$_DFF_PP0_
 select -assert-count 1 t:$_DFF_PP1_
 select -assert-count 1 t:$_DFFE_PN0P_
@@ -63,6 +66,7 @@ simplemap
 
 equiv_opt -undef -assert -multiclock opt_dff -keepdc
 design -load postopt
+
 select -assert-count 1 t:$_DFF_PP0_
 select -assert-count 1 t:$_DFF_PP1_
 select -assert-count 2 t:$_DFFSR_PPP_

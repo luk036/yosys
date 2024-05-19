@@ -1,7 +1,7 @@
 /*
  *  yosys -- Yosys Open SYnthesis Suite
  *
- *  Copyright (C) 2012  Clifford Wolf <clifford@clifford.at>
+ *  Copyright (C) 2012  Claire Xenia Wolf <claire@yosyshq.com>
  *
  *  Permission to use, copy, modify, and/or distribute this software for any
  *  purpose with or without fee is hereby granted, provided that the above
@@ -118,19 +118,14 @@ struct TechmapWorker
 			return result;
 
 		for (auto w : module->wires()) {
-			const char *p = w->name.c_str();
-			if (*p == '$')
+			if (*w->name.c_str() == '$')
 				continue;
 
-			const char *q = strrchr(p+1, '.');
-			if (q)
-				p = q;
-
-			if (!strncmp(p, "\\_TECHMAP_", 10)) {
+			if (w->name.contains("_TECHMAP_") && !w->name.contains("_TECHMAP_REPLACE_")) {
 				TechmapWireData record;
 				record.wire = w;
 				record.value = w;
-				result[p].push_back(record);
+				result[w->name].push_back(record);
 				w->set_bool_attribute(ID::keep);
 				w->set_bool_attribute(ID::_techmap_special_);
 			}
@@ -165,7 +160,7 @@ struct TechmapWorker
 
 		orig_cell_name = cell->name.str();
 		for (auto tpl_cell : tpl->cells())
-			if (tpl_cell->name == ID::_TECHMAP_REPLACE_) {
+			if (tpl_cell->name.ends_with("_TECHMAP_REPLACE_")) {
 				module->rename(cell, stringf("$techmap%d", autoidx++) + cell->name.str());
 				break;
 			}
@@ -226,23 +221,21 @@ struct TechmapWorker
 			}
 			design->select(module, w);
 
-			if (tpl_w->name.begins_with("\\_TECHMAP_REPLACE_.")) {
-				IdString replace_name = stringf("%s%s", orig_cell_name.c_str(), tpl_w->name.c_str() + strlen("\\_TECHMAP_REPLACE_"));
+			if (const char *p = strstr(tpl_w->name.c_str(), "_TECHMAP_REPLACE_.")) {
+				IdString replace_name = stringf("%s%s", orig_cell_name.c_str(), p + strlen("_TECHMAP_REPLACE_"));
 				Wire *replace_w = module->addWire(replace_name, tpl_w);
 				module->connect(replace_w, w);
 			}
 		}
 
-		SigMap tpl_sigmap(tpl);
 		pool<SigBit> tpl_written_bits;
-
 		for (auto tpl_cell : tpl->cells())
 		for (auto &conn : tpl_cell->connections())
 			if (tpl_cell->output(conn.first))
-				for (auto bit : tpl_sigmap(conn.second))
+				for (auto bit : conn.second)
 					tpl_written_bits.insert(bit);
 		for (auto &conn : tpl->connections())
-			for (auto bit : tpl_sigmap(conn.first))
+			for (auto bit : conn.first)
 				tpl_written_bits.insert(bit);
 
 		SigMap port_signal_map;
@@ -280,7 +273,7 @@ struct TechmapWorker
 				SigSpec sig_tpl = w, sig_tpl_pf = w, sig_mod = it.second;
 				apply_prefix(cell->name, sig_tpl_pf, module);
 				for (int i = 0; i < GetSize(sig_tpl) && i < GetSize(sig_mod); i++) {
-					if (tpl_written_bits.count(tpl_sigmap(sig_tpl[i]))) {
+					if (tpl_written_bits.count(sig_tpl[i])) {
 						c.first.append(sig_mod[i]);
 						c.second.append(sig_tpl_pf[i]);
 					} else {
@@ -329,12 +322,12 @@ struct TechmapWorker
 		for (auto tpl_cell : tpl->cells())
 		{
 			IdString c_name = tpl_cell->name;
-			bool techmap_replace_cell = (c_name == ID::_TECHMAP_REPLACE_);
+			bool techmap_replace_cell = c_name.ends_with("_TECHMAP_REPLACE_");
 
 			if (techmap_replace_cell)
 				c_name = orig_cell_name;
-			else if (tpl_cell->name.begins_with("\\_TECHMAP_REPLACE_."))
-				c_name = stringf("%s%s", orig_cell_name.c_str(), c_name.c_str() + strlen("\\_TECHMAP_REPLACE_"));
+			else if (const char *p = strstr(tpl_cell->name.c_str(), "_TECHMAP_REPLACE_."))
+				c_name = stringf("%s%s", orig_cell_name.c_str(), p + strlen("_TECHMAP_REPLACE_"));
 			else
 				apply_prefix(cell->name, c_name);
 
@@ -343,6 +336,11 @@ struct TechmapWorker
 
 			if (c->type.begins_with("\\$"))
 				c->type = c->type.substr(1);
+			
+			if (c->type == ID::_TECHMAP_PLACEHOLDER_ && tpl_cell->has_attribute(ID::techmap_chtype)) {
+				c->type = RTLIL::escape_id(tpl_cell->get_string_attribute(ID::techmap_chtype));
+				c->attributes.erase(ID::techmap_chtype);
+			}
 
 			vector<IdString> autopurge_ports;
 
@@ -371,13 +369,11 @@ struct TechmapWorker
 			for (auto &it2 : autopurge_ports)
 				c->unsetPort(it2);
 
-			if (c->type.in(ID($memrd), ID($memwr), ID($meminit))) {
+			if (c->has_memid()) {
 				IdString memid = c->getParam(ID::MEMID).decode_string();
 				log_assert(memory_renames.count(memid) != 0);
 				c->setParam(ID::MEMID, Const(memory_renames[memid].str()));
-			}
-
-			if (c->type == ID($mem)) {
+			} else if (c->is_mem_cell()) {
 				IdString memid = c->getParam(ID::MEMID).decode_string();
 				apply_prefix(cell->name, memid);
 				c->setParam(ID::MEMID, Const(memid.c_str()));
@@ -386,10 +382,12 @@ struct TechmapWorker
 			if (c->attributes.count(ID::src))
 				c->add_strpool_attribute(ID::src, extra_src_attrs);
 
-			if (techmap_replace_cell)
+			if (techmap_replace_cell) {
 				for (auto attr : cell->attributes)
 					if (!c->attributes.count(attr.first))
 						c->attributes[attr.first] = attr.second;
+				c->attributes.erase(ID::reprocess_after);
+			}
 		}
 
 		for (auto &it : tpl->connections()) {
@@ -732,12 +730,16 @@ struct TechmapWorker
 						for (auto &it : twd)
 							techmap_wire_names.insert(it.first);
 
-						for (auto &it : twd[ID::_TECHMAP_FAIL_]) {
-							RTLIL::SigSpec value = it.value;
-							if (value.is_fully_const() && value.as_bool()) {
-								log("Not using module `%s' from techmap as it contains a %s marker wire with non-zero value %s.\n",
-										derived_name.c_str(), log_id(it.wire->name), log_signal(value));
-								techmap_do_cache[tpl] = false;
+						for (auto &it : twd) {
+							if (!it.first.ends_with("_TECHMAP_FAIL_"))
+								continue;
+							for (const TechmapWireData &elem : it.second) {
+								RTLIL::SigSpec value = elem.value;
+								if (value.is_fully_const() && value.as_bool()) {
+									log("Not using module `%s' from techmap as it contains a %s marker wire with non-zero value %s.\n",
+											derived_name.c_str(), log_id(elem.wire->name), log_signal(value));
+									techmap_do_cache[tpl] = false;
+								}
 							}
 						}
 
@@ -746,7 +748,7 @@ struct TechmapWorker
 
 						for (auto &it : twd)
 						{
-							if (!it.first.begins_with("\\_TECHMAP_DO_") || it.second.empty())
+							if (!it.first.contains("_TECHMAP_DO_") || it.second.empty())
 								continue;
 
 							auto &data = it.second.front();
@@ -758,7 +760,7 @@ struct TechmapWorker
 
 							const char *p = data.wire->name.c_str();
 							const char *q = strrchr(p+1, '.');
-							q = q ? q : p+1;
+							q = q ? q+1 : p+1;
 
 							std::string cmd_string = data.value.as_const().decode_string();
 
@@ -875,7 +877,7 @@ struct TechmapWorker
 
 					TechmapWires twd = techmap_find_special_wires(tpl);
 					for (auto &it : twd) {
-						if (it.first != ID::_TECHMAP_FAIL_ && (!it.first.begins_with("\\_TECHMAP_REMOVEINIT_") || !it.first.ends_with("_")) && !it.first.begins_with("\\_TECHMAP_DO_") && !it.first.begins_with("\\_TECHMAP_DONE_"))
+						if (!it.first.ends_with("_TECHMAP_FAIL_") && (!it.first.begins_with("\\_TECHMAP_REMOVEINIT_") || !it.first.ends_with("_")) && !it.first.contains("_TECHMAP_DO_") && !it.first.contains("_TECHMAP_DONE_"))
 							log_error("Techmap yielded unknown config wire %s.\n", log_id(it.first));
 						if (techmap_do_cache[tpl])
 							for (auto &it2 : it.second)
@@ -985,7 +987,7 @@ struct TechmapPass : public Pass {
 		log("    techmap [-map filename] [selection]\n");
 		log("\n");
 		log("This pass implements a very simple technology mapper that replaces cells in\n");
-		log("the design with implementations given in form of a Verilog or ilang source\n");
+		log("the design with implementations given in form of a Verilog or RTLIL source\n");
 		log("file.\n");
 		log("\n");
 		log("    -map filename\n");
@@ -1029,8 +1031,8 @@ struct TechmapPass : public Pass {
 		log("When a module in the map file has the 'techmap_celltype' attribute set, it will\n");
 		log("match cells with a type that match the text value of this attribute. Otherwise\n");
 		log("the module name will be used to match the cell.  Multiple space-separated cell\n");
-		log("types can be listed, and wildcards using [] will be expanded (ie. \"$_DFF_[PN]_\"\n");
-		log("is the same as \"$_DFF_P_ $_DFF_N_\").\n");
+		log("types can be listed, and wildcards using [] will be expanded (ie.\n");
+		log("\"$_DFF_[PN]_\" is the same as \"$_DFF_P_ $_DFF_N_\").\n");
 		log("\n");
 		log("When a module in the map file has the 'techmap_simplemap' attribute set, techmap\n");
 		log("will use 'simplemap' (see 'help simplemap') to map cells matching the module.\n");
@@ -1044,8 +1046,8 @@ struct TechmapPass : public Pass {
 		log("\n");
 		log("When a port on a module in the map file has the 'techmap_autopurge' attribute\n");
 		log("set, and that port is not connected in the instantiation that is mapped, then\n");
-		log("then a cell port connected only to such wires will be omitted in the mapped\n");
-		log("version of the circuit.\n");
+		log("a cell port connected only to such wires will be omitted in the mapped version\n");
+		log("of the circuit.\n");
 		log("\n");
 		log("All wires in the modules from the map file matching the pattern _TECHMAP_*\n");
 		log("or *._TECHMAP_* are special wires that are used to pass instructions from\n");
@@ -1086,11 +1088,11 @@ struct TechmapPass : public Pass {
 		log("        It is possible to combine both prefixes to 'RECURSION; CONSTMAP; '.\n");
 		log("\n");
 		log("    _TECHMAP_REMOVEINIT_<port-name>_\n");
-		log("        When this wire is set to a constant value, the init attribute of the wire(s)\n");
-		log("        connected to this port will be consumed.  This wire must have the same\n");
-		log("        width as the given port, and for every bit that is set to 1 in the value,\n");
-		log("        the corresponding init attribute bit will be changed to 1'bx.  If all\n");
-		log("        bits of an init attribute are left as x, it will be removed.\n");
+		log("        When this wire is set to a constant value, the init attribute of the\n");
+		log("        wire(s) connected to this port will be consumed.  This wire must have\n");
+		log("        the same width as the given port, and for every bit that is set to 1 in\n");
+		log("        the value, the corresponding init attribute bit will be changed to 1'bx.\n");
+		log("        If all bits of an init attribute are left as x, it will be removed.\n");
 		log("\n");
 		log("In addition to this special wires, techmap also supports special parameters in\n");
 		log("modules in the map file:\n");
@@ -1111,8 +1113,8 @@ struct TechmapPass : public Pass {
 		log("\n");
 		log("    _TECHMAP_WIREINIT_<port-name>_\n");
 		log("        When a parameter with this name exists, it will be set to the initial\n");
-		log("        value of the wire(s) connected to the given port, as specified by the init\n");
-		log("        attribute. If the attribute doesn't exist, x will be filled for the\n");
+		log("        value of the wire(s) connected to the given port, as specified by the\n");
+		log("        init attribute. If the attribute doesn't exist, x will be filled for the\n");
 		log("        missing bits.  To remove the init attribute bits used, use the\n");
 		log("        _TECHMAP_REMOVEINIT_*_ wires.\n");
 		log("\n");
@@ -1137,6 +1139,10 @@ struct TechmapPass : public Pass {
 		log("Similarly, a wire named in the form `_TECHMAP_REPLACE_.<suffix>` will cause a\n");
 		log("new wire alias to be created and named as above but with the `_TECHMAP_REPLACE_'\n");
 		log("prefix also substituted.\n");
+		log("\n");
+		log("A cell with the type _TECHMAP_PLACEHOLDER_ in the map file will have its type\n");
+		log("changed to the content of the techmap_chtype attribute. This allows for choosing\n");
+		log("the cell type dynamically.\n");
 		log("\n");
 		log("See 'help extract' for a pass that does the opposite thing.\n");
 		log("\n");
@@ -1212,7 +1218,7 @@ struct TechmapPass : public Pass {
 						if (!map->module(mod->name))
 							map->add(mod->clone());
 				} else {
-					Frontend::frontend_call(map, nullptr, fn, (fn.size() > 3 && fn.compare(fn.size()-3, std::string::npos, ".il") == 0 ? "ilang" : verilog_frontend));
+					Frontend::frontend_call(map, nullptr, fn, (fn.size() > 3 && fn.compare(fn.size()-3, std::string::npos, ".il") == 0 ? "rtlil" : verilog_frontend));
 				}
 		}
 

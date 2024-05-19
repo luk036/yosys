@@ -1,7 +1,7 @@
 /*
  *  yosys -- Yosys Open SYnthesis Suite
  *
- *  Copyright (C) 2012  Clifford Wolf <clifford@clifford.at>
+ *  Copyright (C) 2012  Claire Xenia Wolf <claire@yosyshq.com>
  *
  *  Permission to use, copy, modify, and/or distribute this software for any
  *  purpose with or without fee is hereby granted, provided that the above
@@ -18,7 +18,7 @@
  */
 
 // [[CITE]] VlogHammer Verilog Regression Test Suite
-// http://www.clifford.at/yosys/vloghammer.html
+// https://yosyshq.net/yosys/vloghammer.html
 
 #include "kernel/register.h"
 #include "kernel/celltypes.h"
@@ -543,13 +543,13 @@ struct EvalPass : public Pass {
 
 				int pos = 0;
 				for (auto &c : tabsigs.chunks()) {
-					tab_line.push_back(log_signal(RTLIL::SigSpec(tabvals).extract(pos, c.width)));
+					tab_line.push_back(log_signal(RTLIL::SigSpec(tabvals).extract(pos, c.width), false));
 					pos += c.width;
 				}
 
 				pos = 0;
 				for (auto &c : signal.chunks()) {
-					tab_line.push_back(log_signal(value.extract(pos, c.width)));
+					tab_line.push_back(log_signal(value.extract(pos, c.width), false));
 					pos += c.width;
 				}
 

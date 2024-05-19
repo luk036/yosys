@@ -1,7 +1,7 @@
 /*
  *  yosys -- Yosys Open SYnthesis Suite
  *
- *  Copyright (C) 2012  Clifford Wolf <clifford@clifford.at>
+ *  Copyright (C) 2012  Claire Xenia Wolf <claire@yosyshq.com>
  *
  *  Permission to use, copy, modify, and/or distribute this software for any
  *  purpose with or without fee is hereby granted, provided that the above
@@ -39,7 +39,7 @@ struct OptLutInsPass : public Pass {
 		log("\n");
 		log("    -tech <technology>\n");
 		log("        Instead of generic $lut cells, operate on LUT cells specific\n");
-		log("        to the given technology.  Valid values are: xilinx, ecp5, gowin.\n");
+		log("        to the given technology.  Valid values are: xilinx, lattice, gowin.\n");
 		log("\n");
 	}
 	void execute(std::vector<std::string> args, RTLIL::Design *design) override
@@ -58,7 +58,7 @@ struct OptLutInsPass : public Pass {
 		}
 		extra_args(args, argidx, design);
 
-		if (techname != "" && techname != "xilinx" && techname != "ecp5" && techname != "gowin")
+		if (techname != "" && techname != "xilinx" && techname != "lattice" && techname != "ecp5" && techname != "gowin")
 			log_cmd_error("Unsupported technology: '%s'\n", techname.c_str());
 
 		for (auto module : design->selected_modules())
@@ -130,7 +130,7 @@ struct OptLutInsPass : public Pass {
 						output = cell->getPort(ID::O);
 					else
 						output = cell->getPort(ID::F);
-				} else if (techname == "ecp5") {
+				} else if (techname == "lattice" || techname == "ecp5") {
 					if (cell->type == ID(LUT4)) {
 						inputs = {
 							cell->getPort(ID::A),
@@ -181,7 +181,7 @@ struct OptLutInsPass : public Pass {
 				if (!doit)
 					continue;
 				log("  Optimizing lut %s (%d -> %d)\n", log_id(cell), GetSize(inputs), GetSize(new_inputs));
-				if (techname == "ecp5") {
+				if (techname == "lattice" || techname == "ecp5") {
 					// Pad the LUT to 4 inputs, adding consts from the front.
 					int extra = 4 - GetSize(new_inputs);
 					log_assert(extra >= 0);
@@ -191,6 +191,12 @@ struct OptLutInsPass : public Pass {
 						for (auto &swz : swizzle)
 							if (swz >= 0)
 								swz += extra;
+					}
+				}
+				if (techname == "gowin") {
+					// Pad the LUT to 1 input, adding consts from the front.
+					if (new_inputs.empty()) {
+						new_inputs.insert(new_inputs.begin(), State::S0);
 					}
 				}
 				Const new_lut(0, 1 << GetSize(new_inputs));
@@ -209,9 +215,9 @@ struct OptLutInsPass : public Pass {
 					}
 					new_lut[i] = lut[lidx];
 				}
-				// For ecp5, do not replace with a const driver — the nextpnr
+				// For lattice, and gowin do not replace with a const driver — the nextpnr
 				// packer requires a complete set of LUTs for wide LUT muxes.
-				if (new_inputs.empty() && techname != "ecp5") {
+				if (new_inputs.empty() && techname != "lattice" && techname != "ecp5" && techname != "gowin") {
 					// const driver.
 					remove_cells.push_back(cell);
 					module->connect(output, new_lut[0]);
@@ -220,7 +226,7 @@ struct OptLutInsPass : public Pass {
 						cell->setParam(ID::LUT, new_lut);
 						cell->setParam(ID::WIDTH, GetSize(new_inputs));
 						cell->setPort(ID::A, new_inputs);
-					} else if (techname == "ecp5") {
+					} else if (techname == "lattice" || techname == "ecp5") {
 						log_assert(GetSize(new_inputs) == 4);
 						cell->setParam(ID::INIT, new_lut);
 						cell->setPort(ID::A, new_inputs[0]);

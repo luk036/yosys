@@ -1,7 +1,7 @@
 /*
  *  yosys -- Yosys Open SYnthesis Suite
  *
- *  Copyright (C) 2014  Clifford Wolf <clifford@clifford.at>
+ *  Copyright (C) 2014  Claire Xenia Wolf <claire@yosyshq.com>
  *  Copyright (C) 2014  Johann Glaser <Johann.Glaser@gmx.at>
  *
  *  Permission to use, copy, modify, and/or distribute this software for any
@@ -65,6 +65,48 @@ static void create_gold_module(RTLIL::Design *design, RTLIL::IdString cell_type,
 
 		wire = module->addWire(ID::Y);
 		wire->width = width;
+		wire->port_output = true;
+		cell->setPort(ID::Y, wire);
+	}
+
+	if (cell_type == ID($bmux))
+	{
+		int width = 1 + xorshift32(8);
+		int swidth = 1 + xorshift32(4);
+
+		wire = module->addWire(ID::A);
+		wire->width = width << swidth;
+		wire->port_input = true;
+		cell->setPort(ID::A, wire);
+
+		wire = module->addWire(ID::S);
+		wire->width = swidth;
+		wire->port_input = true;
+		cell->setPort(ID::S, wire);
+
+		wire = module->addWire(ID::Y);
+		wire->width = width;
+		wire->port_output = true;
+		cell->setPort(ID::Y, wire);
+	}
+
+	if (cell_type == ID($demux))
+	{
+		int width = 1 + xorshift32(8);
+		int swidth = 1 + xorshift32(6);
+
+		wire = module->addWire(ID::A);
+		wire->width = width;
+		wire->port_input = true;
+		cell->setPort(ID::A, wire);
+
+		wire = module->addWire(ID::S);
+		wire->width = swidth;
+		wire->port_input = true;
+		cell->setPort(ID::S, wire);
+
+		wire = module->addWire(ID::Y);
+		wire->width = width << swidth;
 		wire->port_output = true;
 		cell->setPort(ID::Y, wire);
 	}
@@ -678,12 +720,12 @@ struct TestCellPass : public Pass {
 		log("    -s {positive_integer}\n");
 		log("        use this value as rng seed value (default = unix time).\n");
 		log("\n");
-		log("    -f {ilang_file}\n");
-		log("        don't generate circuits. instead load the specified ilang file.\n");
+		log("    -f {rtlil_file}\n");
+		log("        don't generate circuits. instead load the specified RTLIL file.\n");
 		log("\n");
 		log("    -w {filename_prefix}\n");
 		log("        don't test anything. just generate the circuits and write them\n");
-		log("        to ilang files with the specified prefix\n");
+		log("        to RTLIL files with the specified prefix\n");
 		log("\n");
 		log("    -map {filename}\n");
 		log("        pass this option to techmap.\n");
@@ -724,7 +766,7 @@ struct TestCellPass : public Pass {
 	{
 		int num_iter = 100;
 		std::string techmap_cmd = "techmap -assert";
-		std::string ilang_file, write_prefix;
+		std::string rtlil_file, write_prefix;
 		xorshift32_state = 0;
 		std::ofstream vlog_file;
 		bool muxdiv = false;
@@ -750,7 +792,7 @@ struct TestCellPass : public Pass {
 				continue;
 			}
 			if (args[argidx] == "-f" && argidx+1 < GetSize(args)) {
-				ilang_file = args[++argidx];
+				rtlil_file = args[++argidx];
 				num_iter = 1;
 				continue;
 			}
@@ -855,8 +897,10 @@ struct TestCellPass : public Pass {
 		cell_types[ID($logic_and)] = "ABSY";
 		cell_types[ID($logic_or)]  = "ABSY";
 
+		cell_types[ID($mux)] = "*";
+		cell_types[ID($bmux)] = "*";
+		cell_types[ID($demux)] = "*";
 		if (edges) {
-			cell_types[ID($mux)] = "*";
 			cell_types[ID($pmux)] = "*";
 		}
 
@@ -910,10 +954,10 @@ struct TestCellPass : public Pass {
 				selected_cell_types.push_back(args[argidx]);
 		}
 
-		if (!ilang_file.empty()) {
+		if (!rtlil_file.empty()) {
 			if (!selected_cell_types.empty())
 				log_cmd_error("Do not specify any cell types when using -f.\n");
-			selected_cell_types.push_back(ID(ilang));
+			selected_cell_types.push_back(ID(rtlil));
 		}
 
 		if (selected_cell_types.empty())
@@ -925,12 +969,12 @@ struct TestCellPass : public Pass {
 			for (int i = 0; i < num_iter; i++)
 			{
 				RTLIL::Design *design = new RTLIL::Design;
-				if (cell_type == ID(ilang))
-					Frontend::frontend_call(design, NULL, std::string(), "ilang " + ilang_file);
+				if (cell_type == ID(rtlil))
+					Frontend::frontend_call(design, NULL, std::string(), "rtlil " + rtlil_file);
 				else
 					create_gold_module(design, cell_type, cell_types.at(cell_type), constmode, muxdiv);
 				if (!write_prefix.empty()) {
-					Pass::call(design, stringf("write_ilang %s_%s_%05d.il", write_prefix.c_str(), cell_type.c_str()+1, i));
+					Pass::call(design, stringf("write_rtlil %s_%s_%05d.il", write_prefix.c_str(), cell_type.c_str()+1, i));
 				} else if (edges) {
 					Pass::call(design, "dump gold");
 					run_edges_test(design, verbose);

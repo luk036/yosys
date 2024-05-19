@@ -1,7 +1,7 @@
 /*
  *  yosys -- Yosys Open SYnthesis Suite
  *
- *  Copyright (C) 2012  Clifford Wolf <clifford@clifford.at>
+ *  Copyright (C) 2012  Claire Xenia Wolf <claire@yosyshq.com>
  *
  *  Permission to use, copy, modify, and/or distribute this software for any
  *  purpose with or without fee is hereby granted, provided that the above
@@ -26,7 +26,7 @@ USING_YOSYS_NAMESPACE
 PRIVATE_NAMESPACE_BEGIN
 
 struct SynthAchronixPass : public ScriptPass {
-  SynthAchronixPass() : ScriptPass("synth_achronix", "synthesis for Acrhonix Speedster22i FPGAs.") { }
+  SynthAchronixPass() : ScriptPass("synth_achronix", "synthesis for Achronix Speedster22i FPGAs.") { }
 
   void help() override
   {
@@ -173,6 +173,7 @@ struct SynthAchronixPass : public ScriptPass {
         run("hierarchy -check");
         run("stat");
         run("check -noinit");
+        run("blackbox =A:whitebox");
       }
 
     if (check_label("vout"))

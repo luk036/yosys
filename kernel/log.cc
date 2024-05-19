@@ -1,7 +1,7 @@
 /*
  *  yosys -- Yosys Open SYnthesis Suite
  *
- *  Copyright (C) 2012  Clifford Wolf <clifford@clifford.at>
+ *  Copyright (C) 2012  Claire Xenia Wolf <claire@yosyshq.com>
  *
  *  Permission to use, copy, modify, and/or distribute this software for any
  *  purpose with or without fee is hereby granted, provided that the above
@@ -19,7 +19,7 @@
 
 #include "kernel/yosys.h"
 #include "libs/sha1/sha1.h"
-#include "backends/ilang/ilang_backend.h"
+#include "backends/rtlil/rtlil_backend.h"
 
 #if !defined(_WIN32) || defined(__MINGW32__)
 #  include <sys/time.h>
@@ -40,8 +40,9 @@ YOSYS_NAMESPACE_BEGIN
 
 std::vector<FILE*> log_files;
 std::vector<std::ostream*> log_streams;
+std::vector<std::string> log_scratchpads;
 std::map<std::string, std::set<std::string>> log_hdump;
-std::vector<YS_REGEX_TYPE> log_warn_regexes, log_nowarn_regexes, log_werror_regexes;
+std::vector<std::regex> log_warn_regexes, log_nowarn_regexes, log_werror_regexes;
 dict<std::string, LogExpectedItem> log_expect_log, log_expect_warning, log_expect_error;
 std::set<std::string> log_warnings, log_experimentals, log_experimentals_ignored;
 int log_warnings_count = 0;
@@ -58,6 +59,7 @@ bool log_quiet_warnings = false;
 int log_verbose_level;
 string log_last_error;
 void (*log_error_atexit)() = NULL;
+void (*log_verific_callback)(int msg_type, const char *message_id, const char* file_path, unsigned int left_line, unsigned int left_col, unsigned int right_line, unsigned int right_col, const char *msg) = NULL;
 
 int log_make_debug = 0;
 int log_force_debug = 0;
@@ -71,8 +73,6 @@ int string_buf_index = -1;
 static struct timeval initial_tv = { 0, 0 };
 static bool next_print_log = false;
 static int log_newline_count = 0;
-static bool check_expected_logs = true;
-static bool display_error_log_msg = true;
 
 static void log_id_cache_clear()
 {
@@ -147,6 +147,12 @@ void logv(const char *format, va_list ap)
 		if (format[0] && format[strlen(format)-1] == '\n')
 			next_print_log = true;
 
+		// Special case to detect newlines in Python log output, since
+		// the binding always calls `log("%s", payload)` and the newline
+		// is then in the first formatted argument
+		if (!strcmp(format, "%s") && str.back() == '\n')
+			next_print_log = true;
+
 		for (auto f : log_files)
 			fputs(time_str.c_str(), f);
 
@@ -159,6 +165,11 @@ void logv(const char *format, va_list ap)
 
 	for (auto f : log_streams)
 		*f << str;
+
+	RTLIL::Design *design = yosys_get_design();
+	if (design != nullptr)
+		for (auto &scratchpad : log_scratchpads)
+			design->scratchpad[scratchpad].append(str);
 
 	static std::string linebuffer;
 	static bool log_warn_regex_recusion_guard = false;
@@ -177,11 +188,11 @@ void logv(const char *format, va_list ap)
 
 			if (!linebuffer.empty() && linebuffer.back() == '\n') {
 				for (auto &re : log_warn_regexes)
-					if (YS_REGEX_NS::regex_search(linebuffer, re))
+					if (std::regex_search(linebuffer, re))
 						log_warning("Found log message matching -W regex:\n%s", str.c_str());
 
 				for (auto &item : log_expect_log)
-					if (YS_REGEX_NS::regex_search(linebuffer, item.second.pattern))
+					if (std::regex_search(linebuffer, item.second.pattern))
 						item.second.current_count++;
 
 				linebuffer.clear();
@@ -238,7 +249,7 @@ static void logv_warning_with_prefix(const char *prefix,
 	bool suppressed = false;
 
 	for (auto &re : log_nowarn_regexes)
-		if (YS_REGEX_NS::regex_search(message, re))
+		if (std::regex_search(message, re))
 			suppressed = true;
 
 	if (suppressed)
@@ -251,12 +262,12 @@ static void logv_warning_with_prefix(const char *prefix,
 		log_make_debug = 0;
 
 		for (auto &re : log_werror_regexes)
-			if (YS_REGEX_NS::regex_search(message, re))
+			if (std::regex_search(message, re))
 				log_error("%s",  message.c_str());
 
 		bool warning_match = false;
 		for (auto &item : log_expect_warning)
-			if (YS_REGEX_NS::regex_search(message, item.second.pattern)) {
+			if (std::regex_search(message, item.second.pattern)) {
 				item.second.current_count++;
 				warning_match = true;
 			}
@@ -339,23 +350,24 @@ static void logv_error_with_prefix(const char *prefix,
 				f = stderr;
 
 	log_last_error = vstringf(format, ap);
-	if (display_error_log_msg)
-		log("%s%s", prefix, log_last_error.c_str());
+	log("%s%s", prefix, log_last_error.c_str());
 	log_flush();
 
 	log_make_debug = bak_log_make_debug;
 
+	for (auto &item : log_expect_error)
+		if (std::regex_search(log_last_error, item.second.pattern))
+			item.second.current_count++;
+
+	log_check_expected();
+
 	if (log_error_atexit)
 		log_error_atexit();
 
-	for (auto &item : log_expect_error)
-		if (YS_REGEX_NS::regex_search(log_last_error, item.second.pattern))
-			item.second.current_count++;
-
-	if (check_expected_logs)
-		log_check_expected();
-
 	YS_DEBUGTRAP_IF_DEBUGGING;
+	const char *e = getenv("YOSYS_ABORT_ON_LOG_ERROR");
+	if (e && atoi(e))
+		abort();
 
 #ifdef EMSCRIPTEN
 	log_files = backup_log_files;
@@ -372,14 +384,20 @@ void logv_error(const char *format, va_list ap)
 	logv_error_with_prefix("ERROR: ", format, ap);
 }
 
+void logv_file_error(const string &filename, int lineno,
+                     const char *format, va_list ap)
+{
+	std::string prefix = stringf("%s:%d: ERROR: ",
+				     filename.c_str(), lineno);
+	logv_error_with_prefix(prefix.c_str(), format, ap);
+}
+
 void log_file_error(const string &filename, int lineno,
                     const char *format, ...)
 {
 	va_list ap;
 	va_start(ap, format);
-	std::string prefix = stringf("%s:%d: ERROR: ",
-				     filename.c_str(), lineno);
-	logv_error_with_prefix(prefix.c_str(), format, ap);
+	logv_file_error(filename, lineno, format, ap);
 }
 
 void log(const char *format, ...)
@@ -600,7 +618,7 @@ void log_dump_val_worker(RTLIL::State v) {
 const char *log_signal(const RTLIL::SigSpec &sig, bool autoint)
 {
 	std::stringstream buf;
-	ILANG_BACKEND::dump_sigspec(buf, sig, autoint);
+	RTLIL_BACKEND::dump_sigspec(buf, sig, autoint);
 
 	if (string_buf.size() < 100) {
 		string_buf.push_back(buf.str());
@@ -631,7 +649,7 @@ const char *log_const(const RTLIL::Const &value, bool autoint)
 	}
 }
 
-const char *log_id(RTLIL::IdString str)
+const char *log_id(const RTLIL::IdString &str)
 {
 	log_id_cache.push_back(strdup(str.c_str()));
 	const char *p = log_id_cache.back();
@@ -647,29 +665,34 @@ const char *log_id(RTLIL::IdString str)
 void log_module(RTLIL::Module *module, std::string indent)
 {
 	std::stringstream buf;
-	ILANG_BACKEND::dump_module(buf, indent, module, module->design, false);
+	RTLIL_BACKEND::dump_module(buf, indent, module, module->design, false);
 	log("%s", buf.str().c_str());
 }
 
 void log_cell(RTLIL::Cell *cell, std::string indent)
 {
 	std::stringstream buf;
-	ILANG_BACKEND::dump_cell(buf, indent, cell);
+	RTLIL_BACKEND::dump_cell(buf, indent, cell);
 	log("%s", buf.str().c_str());
 }
 
 void log_wire(RTLIL::Wire *wire, std::string indent)
 {
 	std::stringstream buf;
-	ILANG_BACKEND::dump_wire(buf, indent, wire);
+	RTLIL_BACKEND::dump_wire(buf, indent, wire);
 	log("%s", buf.str().c_str());
 }
 
 void log_check_expected()
 {
-	check_expected_logs = false;
+	// copy out all of the expected logs so that they cannot be re-checked
+	// or match against themselves
+	dict<std::string, LogExpectedItem> expect_log, expect_warning, expect_error;
+	std::swap(expect_warning, log_expect_warning);
+	std::swap(expect_log, log_expect_log);
+	std::swap(expect_error, log_expect_error);
 
-	for (auto &item : log_expect_warning) {
+	for (auto &item : expect_warning) {
 		if (item.second.current_count == 0) {
 			log_warn_regexes.clear();
 			log_error("Expected warning pattern '%s' not found !\n", item.first.c_str());
@@ -681,7 +704,7 @@ void log_check_expected()
 		}
 	}
 
-	for (auto &item : log_expect_log) {
+	for (auto &item : expect_log) {
 		if (item.second.current_count == 0) {
 			log_warn_regexes.clear();
 			log_error("Expected log pattern '%s' not found !\n", item.first.c_str());
@@ -693,10 +716,11 @@ void log_check_expected()
 		}
 	}
 
-	for (auto &item : log_expect_error)
+	for (auto &item : expect_error)
 		if (item.second.current_count == item.second.expected_count) {
 			log_warn_regexes.clear();
 			log("Expected error pattern '%s' found !!!\n", item.first.c_str());
+			yosys_shutdown();
 			#ifdef EMSCRIPTEN
 				throw 0;
 			#elif defined(_MSC_VER)
@@ -705,7 +729,6 @@ void log_check_expected()
 				_Exit(0);
 			#endif
 		} else {
-			display_error_log_msg = false;
 			log_warn_regexes.clear();
 			log_error("Expected error pattern '%s' not found !\n", item.first.c_str());
 		}

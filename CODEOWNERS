@@ -10,13 +10,17 @@
 
 # PATH (can use glob)          USERNAME(S)
 
+CODEOWNERS                     @nakengelhardt
 passes/cmds/scratchpad.cc      @nakengelhardt
 frontends/rpc/                 @whitequark
 backends/cxxrtl/               @whitequark
 passes/cmds/bugpoint.cc        @whitequark
 passes/techmap/flowmap.cc      @whitequark
 passes/opt/opt_lut.cc          @whitequark
-
+passes/techmap/abc9*.cc        @eddiehung @Ravenslofty
+backends/aiger/xaiger.cc       @eddiehung
+docs/                          @KrystalDelusion
+.github/workflows/*.yml        @mmicko
 
 ## External Contributors
 # Only users with write permission to the repository get review
@@ -25,7 +29,12 @@ passes/opt/opt_lut.cc          @whitequark
 # These still override previous lines, so be careful not to
 # accidentally disable any of the above rules.
 
-techlibs/intel_alm/            @ZirconiumX
+frontends/verilog/             @zachjs
+frontends/ast/                 @zachjs
+
+techlibs/intel_alm/            @Ravenslofty
+techlibs/gowin/                @pepijndevos
+techlibs/gatemate/             @pu-cc
 
 # pyosys
 misc/*.py                      @btut
@@ -35,4 +44,5 @@ backends/firrtl                @ucbjrl @azidar
 passes/sat/qbfsat.cc           @boqwxp
 passes/sat/qbfsat.h            @boqwxp
 passes/cmds/exec.cc            @boqwxp
+passes/cmds/glift.cc           @boqwxp
 passes/cmds/printattrs.cc      @boqwxp

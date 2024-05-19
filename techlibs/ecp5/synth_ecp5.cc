@@ -1,8 +1,8 @@
 /*
  *  yosys -- Yosys Open SYnthesis Suite
  *
- *  Copyright (C) 2012 Clifford Wolf <clifford@clifford.at>
- *  Copyright (C) 2018 David Shah <dave@ds0.me>
+ *  Copyright (C) 2012 Claire Xenia Wolf <claire@yosyshq.com>
+ *  Copyright (C) 2018 gatecat <gatecat@ds0.me>
  *
  *  Permission to use, copy, modify, and/or distribute this software for any
  *  purpose with or without fee is hereby granted, provided that the above
@@ -88,20 +88,28 @@ struct SynthEcp5Pass : public ScriptPass
 		log("        do not use PFU muxes to implement LUTs larger than LUT4s\n");
 		log("\n");
 		log("    -asyncprld\n");
-		log("        use async PRLD mode to implement DLATCH and DFFSR (EXPERIMENTAL)\n");
+		log("        use async PRLD mode to implement ALDFF (EXPERIMENTAL)\n");
 		log("\n");
 		log("    -abc2\n");
 		log("        run two passes of 'abc' for slightly improved logic density\n");
 		log("\n");
-		log("    -abc9\n");
-		log("        use new ABC9 flow (EXPERIMENTAL)\n");
+		log("    -noabc9\n");
+		log("        disable use of new ABC9 flow\n");
 		log("\n");
 		log("    -vpr\n");
 		log("        generate an output netlist (and BLIF file) suitable for VPR\n");
 		log("        (this feature is experimental and incomplete)\n");
 		log("\n");
+		log("    -iopad\n");
+		log("        insert IO buffers\n");
+		log("\n");
 		log("    -nodsp\n");
 		log("        do not map multipliers to MULT18X18D\n");
+		log("\n");
+		log("    -no-rw-check\n");
+		log("        marks all recognized read ports as \"return don't-care value on\n");
+		log("        read/write collision\" (same result as setting the no_rw_check\n");
+		log("        attribute on all memories).\n");
 		log("\n");
 		log("\n");
 		log("The following commands are executed by this synthesis command:\n");
@@ -110,7 +118,7 @@ struct SynthEcp5Pass : public ScriptPass
 	}
 
 	string top_opt, blif_file, edif_file, json_file;
-	bool noccu2, nodffe, nobram, nolutram, nowidelut, asyncprld, flatten, dff, retime, abc2, abc9, nodsp, vpr;
+	bool noccu2, nodffe, nobram, nolutram, nowidelut, asyncprld, flatten, dff, retime, abc2, abc9, iopad, nodsp, vpr, no_rw_check;
 
 	void clear_flags() override
 	{
@@ -129,8 +137,10 @@ struct SynthEcp5Pass : public ScriptPass
 		retime = false;
 		abc2 = false;
 		vpr = false;
-		abc9 = false;
+		abc9 = true;
+		iopad = false;
 		nodsp = false;
+		no_rw_check = false;
 	}
 
 	void execute(std::vector<std::string> args, RTLIL::Design *design) override
@@ -214,11 +224,23 @@ struct SynthEcp5Pass : public ScriptPass
 				continue;
 			}
 			if (args[argidx] == "-abc9") {
-				abc9 = true;
+				// removed, ABC9 is on by default.
+				continue;
+			}
+			if (args[argidx] == "-noabc9") {
+				abc9 = false;
+				continue;
+			}
+			if (args[argidx] == "-iopad") {
+				iopad = true;
 				continue;
 			}
 			if (args[argidx] == "-nodsp") {
 				nodsp = true;
+				continue;
+			}
+			if (args[argidx] == "-no-rw-check") {
+				no_rw_check = true;
 				continue;
 			}
 			break;
@@ -241,6 +263,12 @@ struct SynthEcp5Pass : public ScriptPass
 
 	void script() override
 	{
+		std::string no_rw_check_opt = "";
+		if (no_rw_check)
+			no_rw_check_opt = " -no-rw-check";
+		if (help_mode)
+			no_rw_check_opt = " [-no-rw-check]";
+
 		if (check_label("begin"))
 		{
 			run("read_verilog -lib -specify +/ecp5/cells_sim.v +/ecp5/cells_bb.v");
@@ -273,28 +301,29 @@ struct SynthEcp5Pass : public ScriptPass
 			}
 			run("alumacc");
 			run("opt");
-			run("memory -nomap");
+			run("memory -nomap" + no_rw_check_opt);
 			run("opt_clean");
 		}
 
-		if (!nobram && check_label("map_bram", "(skip if -nobram)"))
+		if (check_label("map_ram"))
 		{
-			run("memory_bram -rules +/ecp5/brams.txt");
-			run("techmap -map +/ecp5/brams_map.v");
-		}
-
-		if (!nolutram && check_label("map_lutram", "(skip if -nolutram)"))
-		{
-			run("memory_bram -rules +/ecp5/lutrams.txt");
-			run("techmap -map +/ecp5/lutrams_map.v");
+			std::string args = "";
+			if (help_mode)
+				args += " [-no-auto-block] [-no-auto-distributed]";
+			else {
+				if (nobram)
+					args += " -no-auto-block";
+				if (nolutram)
+					args += " -no-auto-distributed";
+			}
+			run("memory_libmap -lib +/ecp5/lutrams.txt -lib +/ecp5/brams.txt" + args, "(-no-auto-block if -nobram, -no-auto-distributed if -nolutram)");
+			run("techmap -map +/ecp5/lutrams_map.v -map +/ecp5/brams_map.v");
 		}
 
 		if (check_label("map_ffram"))
 		{
 			run("opt -fast -mux_undef -undriven -fine");
-			run("memory_map -iattr -attr !ram_block -attr !rom_block -attr logic_block "
-			    "-attr syn_ramstyle=auto -attr syn_ramstyle=registers "
-			    "-attr syn_romstyle=auto -attr syn_romstyle=logic");
+			run("memory_map");
 			run("opt -undriven -fine");
 		}
 
@@ -304,6 +333,11 @@ struct SynthEcp5Pass : public ScriptPass
 				run("techmap");
 			else
 				run("techmap -map +/techmap.v -map +/ecp5/arith_map.v");
+			if (help_mode || iopad) {
+				run("iopadmap -bits -outpad OB I:O -inpad IB O:I -toutpad OBZ ~T:I:O -tinoutpad BB ~T:O:I:B A:top", "(only if '-iopad')");
+				run("attrmvcp -attr src -attr LOC t:OB %x:+[O] t:OBZ %x:+[O] t:BB %x:+[B]");
+				run("attrmvcp -attr src -attr LOC -driven t:IB %x:+[I]");
+			}
 			run("opt -fast");
 			if (retime || help_mode)
 				run("abc -dff -D 1", "(only if -retime)");
@@ -318,19 +352,20 @@ struct SynthEcp5Pass : public ScriptPass
 			} else if (!nodffe) {
 				dfflegalize_args += " -cell $_DFFE_??_ 01 -cell $_DFFE_?P??_ r -cell $_SDFFE_?P??_ r";
 			}
-			dfflegalize_args += " -cell $_DLATCH_?_ x";
 			if (help_mode) {
-				dfflegalize_args += " [-cell $_DFFSR_?PP_ x]";
+				dfflegalize_args += " [-cell $_ALDFF_?P_ x -cell $_ALDFFE_?P?_ x] [-cell $_DLATCH_?_ x]";
 			} else if (asyncprld) {
-				dfflegalize_args += " -cell $_DFFSR_?PP_ x";
+				dfflegalize_args += " -cell $_ALDFF_?P_ x -cell $_ALDFFE_?P?_ x";
+			} else {
+				dfflegalize_args += " -cell $_DLATCH_?_ x";
 			}
-			run("dfflegalize" + dfflegalize_args, "($_DFFSR_*_ only if -asyncprld, $_*DFFE_* only if not -nodffe)");
+			run("dfflegalize" + dfflegalize_args, "($_ALDFF_*_ only if -asyncprld, $_DLATCH_* only if not -asyncprld, $_*DFFE_* only if not -nodffe)");
 			if ((abc9 && dff) || help_mode)
-				run("zinit -all w:* t:$_DFF_?_ t:$_DFFE_??_ t:$_SDFF*", "(only if -abc9 and -dff");
-			run(stringf("techmap -D NO_LUT %s -map +/ecp5/cells_map.v", help_mode ? "[-D ASYNC_PRLD]" : (asyncprld ? "-D ASYNC_PRLD" : "")));
+				run("zinit -all w:* t:$_DFF_?_ t:$_DFFE_??_ t:$_SDFF*", "(only if -abc9 and -dff)");
+			run("techmap -D NO_LUT -map +/ecp5/cells_map.v");
 			run("opt_expr -undriven -mux_undef");
 			run("simplemap");
-			run("ecp5_gsr");
+			run("lattice_gsr");
 			run("attrmvcp -copy -attr syn_useioff");
 			run("opt_clean");
 		}
@@ -375,7 +410,7 @@ struct SynthEcp5Pass : public ScriptPass
 				run("techmap -map +/ecp5/cells_map.v", "(skip if -vpr)");
 			else if (!vpr)
 				run("techmap -map +/ecp5/cells_map.v");
-			run("opt_lut_ins -tech ecp5");
+			run("opt_lut_ins -tech lattice");
 			run("clean");
 		}
 
@@ -385,6 +420,7 @@ struct SynthEcp5Pass : public ScriptPass
 			run("hierarchy -check");
 			run("stat");
 			run("check -noinit");
+			run("blackbox =A:whitebox");
 		}
 
 		if (check_label("blif"))
